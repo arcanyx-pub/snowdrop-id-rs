@@ -211,9 +211,9 @@ impl EncodedId {
     /// The encoded string.
     pub fn as_str(&self) -> &str {
         let bytes = &self.buf[base62::MAX_LEN - self.len as usize..];
-        // SAFETY: the buffer is filled exclusively from the base62 alphabet,
-        // which is ASCII.
-        unsafe { core::str::from_utf8_unchecked(bytes) }
+        // The buffer is filled exclusively from the base62 alphabet, which is
+        // ASCII, so validation always succeeds (and is ~1 ns for 11 bytes).
+        core::str::from_utf8(bytes).expect("base62 output is ASCII")
     }
 }
 
