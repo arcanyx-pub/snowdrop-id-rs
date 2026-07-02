@@ -1,39 +1,10 @@
-[package]
-name = "snowdrop-id"
+[workspace]
+resolver = "3"
+members = ["snowdrop-id", "snowdrop-id-cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Snowdrop IDs: 63-bit, roughly monotonic, Snowflake-interchangeable identifiers with a very short base62 form"
 repository = "https://github.com/arcanyx-pub/snowdrop-id-rs"
-readme = "README.md"
-keywords = ["snowflake", "id", "identifier", "base62", "unique"]
-categories = ["data-structures", "database", "web-programming"]
-
-[features]
-default = []
-serde = ["dep:serde"]
-tokio = ["dep:tokio"]
-sqlx-postgres = ["dep:sqlx", "sqlx/postgres"]
-sqlx-mysql = ["dep:sqlx", "sqlx/mysql"]
-sqlx-sqlite = ["dep:sqlx", "sqlx/sqlite"]
-cli = []
-
-[dependencies]
-serde = { version = "1", optional = true }
-tokio = { version = "1", optional = true, default-features = false, features = ["time"] }
-sqlx = { version = "0.8", optional = true, default-features = false }
-
-[dev-dependencies]
-serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
-
-[[bin]]
-name = "snowdrop"
-path = "src/bin/snowdrop.rs"
-required-features = ["cli"]
-
-[[test]]
-name = "sqlx_sqlite"
-required-features = ["sqlx-sqlite"]

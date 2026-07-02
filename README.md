@@ -38,12 +38,14 @@ instead of blocking on the (rare) sequence-exhaustion wait.
 | `tokio` | `Generator::generate_async()` |
 | `serde` | `Serialize`/`Deserialize` as the base62 string; numeric via `serde_u64` |
 | `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` | `sqlx` `Type`/`Encode`/`Decode` as `BIGINT` |
-| `cli` | the `snowdrop` command-line tool |
 
 ## CLI
 
+The `snowdrop` tool lives in the companion
+[`snowdrop-id-cli`](snowdrop-id-cli/) crate:
+
 ```console
-$ cargo install snowdrop-id --features cli
+$ cargo install snowdrop-id-cli
 $ snowdrop generate -n 2
 198358378861297664	37mXl
 198358378861297665	ciYFJPE

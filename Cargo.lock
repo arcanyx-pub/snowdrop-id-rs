@@ -991,6 +991,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowdrop-id-cli"
+version = "0.1.0"
+dependencies = [
+ "snowdrop-id",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
