@@ -1,8 +1,8 @@
 //! `snowdrop` — command-line tool for generating, encoding, and decoding
-//! Snowdrop IDs. Built with `--features cli`:
+//! Snowdrop IDs.
 //!
 //! ```text
-//! cargo install snowdrop-id --features cli
+//! cargo install snowdrop-id-cli
 //! ```
 
 use std::process::ExitCode;

@@ -1,0 +1,18 @@
+[package]
+name = "snowdrop-id-cli"
+description = "Command-line tool (`snowdrop`) for generating, encoding, and decoding Snowdrop IDs"
+readme = "README.md"
+keywords = ["snowflake", "id", "identifier", "base62", "cli"]
+categories = ["command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "snowdrop"
+path = "src/main.rs"
+
+[dependencies]
+snowdrop-id = { version = "0.1.0", path = "../snowdrop-id" }

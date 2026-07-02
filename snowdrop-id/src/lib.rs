@@ -29,8 +29,9 @@
 //!   string; numeric opt-in via [`serde_u64`].
 //! - `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` — `sqlx` `Type`/`Encode`/
 //!   `Decode` impls mapping [`SnowdropId`] to `BIGINT`.
-//! - `cli` — builds the `snowdrop` command-line tool
-//!   (`cargo install snowdrop-id --features cli`).
+//!
+//! A companion command-line tool is available as the `snowdrop-id-cli`
+//! crate (`cargo install snowdrop-id-cli`).
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
