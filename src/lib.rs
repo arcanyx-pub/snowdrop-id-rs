@@ -33,6 +33,7 @@
 //!   (`cargo install snowdrop-id --features cli`).
 
 #![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod base62;
 mod clock;
