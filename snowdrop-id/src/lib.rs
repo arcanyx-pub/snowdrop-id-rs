@@ -32,6 +32,10 @@
 //!
 //! A companion command-line tool is available as the `snowdrop-id-cli`
 //! crate (`cargo install snowdrop-id-cli`).
+//!
+//! For retrofits where injecting a [`Generator`] isn't practical, the
+//! [`global`] module provides a process-global generator configured once
+//! at startup.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -40,6 +44,7 @@ mod base62;
 mod clock;
 mod epoch;
 mod generator;
+pub mod global;
 mod id;
 mod machine;
 
