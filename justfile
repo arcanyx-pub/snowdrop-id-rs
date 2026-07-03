@@ -33,15 +33,11 @@ ci: fmt-check clippy test doc
 install-cli:
     cargo install --path snowdrop-id-cli
 
-# Verify both crates package cleanly (CLI skips build verification:
-# its snowdrop-id dependency isn't on crates.io until publish)
+# Verify both crates package and build cleanly (workspace-aware: the CLI
+# is verified against the freshly packaged lib, not crates.io)
 package:
-    cargo publish -p snowdrop-id --dry-run
-    cargo package -p snowdrop-id-cli --no-verify
+    cargo package --workspace
 
-# Publish both crates: the lib first, then the CLI once it's indexed
+# Publish both crates; cargo orders them (lib first) and waits for indexing
 publish: ci
-    cargo publish -p snowdrop-id
-    @echo "Waiting for crates.io to index snowdrop-id ..."
-    sleep 60
-    cargo publish -p snowdrop-id-cli
+    cargo publish --workspace
