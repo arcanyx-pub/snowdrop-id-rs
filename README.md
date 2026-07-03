@@ -1,5 +1,9 @@
 # snowdrop-id-rs
 
+[![CI](https://github.com/arcanyx-pub/snowdrop-id-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/arcanyx-pub/snowdrop-id-rs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/snowdrop-id.svg)](https://crates.io/crates/snowdrop-id)
+[![docs.rs](https://img.shields.io/docsrs/snowdrop-id)](https://docs.rs/snowdrop-id)
+
 Rust implementation of Snowdrop ID, a smaller, cuter alternative to Snowflake.
 
 <p align="center">
