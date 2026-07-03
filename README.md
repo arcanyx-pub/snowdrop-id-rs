@@ -31,6 +31,14 @@ The generator is lock-free and `Send + Sync` — share one per process via
 `Arc` or a `static`. With the `tokio` feature, `generate_async()` awaits
 instead of blocking on the (rare) sequence-exhaustion wait.
 
+For retrofits where injecting a generator isn't practical, configure a
+process-global one once at startup:
+
+```rust
+snowdrop_id::global::init(MachineId::new(0).unwrap())?; // in main()
+let id = snowdrop_id::global::generate()?;              // anywhere else
+```
+
 ### Feature flags
 
 | Feature | Adds |
