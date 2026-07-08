@@ -10,6 +10,12 @@ Rust implementation of Snowdrop ID, a smaller, cuter alternative to Snowflake.
   <img src="assets/snowdrop.jpg" alt="Snowdrop, the Heeler puppy mascot, holding a snowdrop flower in a snowy forest" width="600">
 </p>
 
+TL;DR:
+```text
+DB: 200708872623620096
+URL: example.com/user/3A4ue
+```
+
 A Snowdrop ID is a 63-bit, roughly monotonic, collision-free identifier —
 like a Snowflake ID — that additionally encodes to a very short base62
 string (7 characters or fewer in the common case, as few as 5) and
