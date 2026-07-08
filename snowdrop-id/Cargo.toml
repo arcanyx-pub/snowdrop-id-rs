@@ -10,6 +10,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# docs.rs builds with default features unless told otherwise, which would
+# hide generate_async, serde_u64, and the sqlx impls from the docs.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 serde = ["dep:serde"]
