@@ -16,7 +16,16 @@ serde = ["dep:serde"]
 tokio = ["dep:tokio"]
 sqlx-postgres = ["dep:sqlx", "sqlx/postgres"]
 sqlx-mysql = ["dep:sqlx", "sqlx/mysql"]
+# Maps SnowdropId to BIGINT UNSIGNED (u64) instead of signed BIGINT, for
+# existing unsigned MySQL schemas. Mutually exclusive with sqlx-mysql.
+sqlx-mysql-u64 = ["dep:sqlx", "sqlx/mysql"]
 sqlx-sqlite = ["dep:sqlx", "sqlx/sqlite"]
+
+# `sqlx-mysql` and `sqlx-mysql-u64` cannot be enabled together, so docs.rs
+# builds with every feature except the u64 variant (whose impls look
+# identical in rustdoc anyway).
+[package.metadata.docs.rs]
+features = ["serde", "tokio", "sqlx-postgres", "sqlx-mysql", "sqlx-sqlite"]
 
 [dependencies]
 serde = { version = "1", optional = true }

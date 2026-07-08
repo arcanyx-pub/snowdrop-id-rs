@@ -29,6 +29,9 @@
 //!   string; numeric opt-in via [`serde_u64`].
 //! - `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` — `sqlx` `Type`/`Encode`/
 //!   `Decode` impls mapping [`SnowdropId`] to `BIGINT`.
+//! - `sqlx-mysql-u64` — maps [`SnowdropId`] to MySQL `BIGINT UNSIGNED`
+//!   (`u64`) instead, for existing unsigned schemas. Mutually exclusive
+//!   with `sqlx-mysql`.
 //!
 //! A companion command-line tool is available as the `snowdrop-id-cli`
 //! crate (`cargo install snowdrop-id-cli`).
@@ -54,6 +57,7 @@ mod serde_support;
 #[cfg(any(
     feature = "sqlx-postgres",
     feature = "sqlx-mysql",
+    feature = "sqlx-mysql-u64",
     feature = "sqlx-sqlite"
 ))]
 mod sqlx_support;

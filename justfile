@@ -1,3 +1,7 @@
+# All features that can be enabled together (sqlx-mysql-u64 is mutually
+# exclusive with sqlx-mysql, so --all-features cannot be used)
+features := "snowdrop-id/serde,snowdrop-id/tokio,snowdrop-id/sqlx-postgres,snowdrop-id/sqlx-mysql,snowdrop-id/sqlx-sqlite"
+
 # List available recipes
 default:
     @just --list
@@ -12,11 +16,12 @@ fmt-check:
 
 # Lint with clippy across all targets and features; warnings are errors
 clippy:
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --features {{features}} -- -D warnings
+    cargo clippy -p snowdrop-id --all-targets --features sqlx-mysql-u64 -- -D warnings
 
-# Run the full test suite (all features)
+# Run the full test suite (all compatible features)
 test:
-    cargo test --workspace --all-features
+    cargo test --workspace --features {{features}}
 
 # Quick tests with default features only
 test-fast:
@@ -24,7 +29,7 @@ test-fast:
 
 # Build docs like docs.rs does; warnings are errors
 doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --features {{features}} --no-deps
 
 # Everything CI checks, in one command
 ci: fmt-check clippy test doc

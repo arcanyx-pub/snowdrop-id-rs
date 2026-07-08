@@ -8,6 +8,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # All features that can be enabled together (sqlx-mysql-u64 is mutually
+  # exclusive with sqlx-mysql, so --all-features cannot be used)
+  FEATURES: snowdrop-id/serde,snowdrop-id/tokio,snowdrop-id/sqlx-postgres,snowdrop-id/sqlx-mysql,snowdrop-id/sqlx-sqlite
 
 jobs:
   test:
@@ -19,8 +22,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test (default features)
         run: cargo test --workspace
-      - name: Test (all features)
-        run: cargo test --workspace --all-features
+      - name: Test (all compatible features)
+        run: cargo test --workspace --features "$FEATURES"
 
   lint:
     name: Rustfmt & Clippy
@@ -32,7 +35,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features "$FEATURES" -- -D warnings
+      - name: Clippy (sqlx-mysql-u64 variant)
+        run: cargo clippy -p snowdrop-id --all-targets --features sqlx-mysql-u64 -- -D warnings
 
   docs:
     name: Docs
@@ -43,7 +48,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --workspace --all-features --no-deps
+      - run: cargo doc --workspace --features "$FEATURES" --no-deps
 
   msrv:
     name: MSRV (1.85)
@@ -54,4 +59,4 @@ jobs:
         with:
           toolchain: "1.85"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets --all-features
+      - run: cargo check --workspace --all-targets --features "$FEATURES"

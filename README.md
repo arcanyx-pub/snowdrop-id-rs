@@ -50,6 +50,7 @@ let id = snowdrop_id::global::generate()?;              // anywhere else
 | `tokio` | `Generator::generate_async()` |
 | `serde` | `Serialize`/`Deserialize` as the base62 string; numeric via `serde_u64` |
 | `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` | `sqlx` `Type`/`Encode`/`Decode` as `BIGINT` |
+| `sqlx-mysql-u64` | MySQL as `BIGINT UNSIGNED` (`u64`) for existing unsigned schemas; mutually exclusive with `sqlx-mysql` |
 
 ## CLI
 
