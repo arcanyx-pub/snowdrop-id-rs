@@ -7,7 +7,9 @@
 Rust implementation of Snowdrop ID, a smaller, cuter alternative to Snowflake.
 
 <p align="center">
-  <img src="assets/snowdrop.jpg" alt="Snowdrop, the Heeler puppy mascot, holding a snowdrop flower in a snowy forest" width="600">
+  <!-- Absolute URL: crates.io resolves relative paths against the crate's
+       workspace subdirectory (path_in_vcs), not the repo root, and 404s. -->
+  <img src="https://raw.githubusercontent.com/arcanyx-pub/snowdrop-id-rs/main/assets/snowdrop.jpg" alt="Snowdrop, the Heeler puppy mascot, holding a snowdrop flower in a snowy forest" width="600">
 </p>
 
 TL;DR:
