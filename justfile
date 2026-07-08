@@ -1,3 +1,6 @@
+# The shared workspace version, e.g. "0.1.1"
+version := `grep -m1 '^version' Cargo.toml | cut -d '"' -f 2`
+
 # List available recipes
 default:
     @just --list
@@ -38,6 +41,10 @@ install-cli:
 package:
     cargo package --workspace
 
-# Publish both crates; cargo orders them (lib first) and waits for indexing
+# Publish both crates (cargo orders them lib-first and waits for indexing),
+# then tag the released commit vX.Y.Z and push the tag
 publish: ci
+    git diff --quiet HEAD || { echo "error: uncommitted changes; commit before publishing"; exit 1; }
     cargo publish --workspace
+    git tag -a "v{{version}}" -m "snowdrop-id & snowdrop-id-cli v{{version}}"
+    git push origin "v{{version}}"
