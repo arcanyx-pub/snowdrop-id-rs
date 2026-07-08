@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "snowdrop-id"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "snowdrop-id-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "snowdrop-id",
 ]
