@@ -84,6 +84,9 @@ let id = generator.generate()?;
 | `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` | `sqlx` `Type`/`Encode`/`Decode` as `BIGINT` |
 | `postgres-machine-id` | machine IDs leased via Postgres advisory locks |
 
+The core crate and CLI support Rust 1.85+; the sqlx-backed features
+(`sqlx-*`, `postgres-machine-id`) require Rust 1.94+ via sqlx 0.9.
+
 ## CLI
 
 The `snowdrop` tool lives in the companion
