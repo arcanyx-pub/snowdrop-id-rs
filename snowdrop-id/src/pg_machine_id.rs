@@ -329,9 +329,22 @@ impl PgIdGenerator {
     /// [`PgGenerateError::MachineIdLeaseLost`] while the advisory lock is
     /// not confirmed held.
     pub fn generate(&self) -> Result<Id, PgGenerateError> {
-        self.check_poisoned()?;
-        self.with_inner(|inner| inner.generate())
-            .map_err(PgGenerateError::from)
+        // Mirrors generate_async: the (rare) sequence-exhaustion sleep must
+        // happen with no lock held, so a pending machine-ID swap and other
+        // callers are never stuck behind a sleeping reader; the poison
+        // check re-runs after every sleep.
+        loop {
+            self.check_poisoned()?;
+            match self.with_inner(|inner| inner.try_generate()) {
+                Ok(id) => return Ok(id),
+                Err(TryGenerateError::SequenceExhausted { retry_after }) => {
+                    std::thread::sleep(retry_after);
+                }
+                Err(TryGenerateError::EpochExhausted) => {
+                    return Err(PgGenerateError::EpochExhausted);
+                }
+            }
+        }
     }
 
     /// Generates the next ID, awaiting instead of blocking the thread on
