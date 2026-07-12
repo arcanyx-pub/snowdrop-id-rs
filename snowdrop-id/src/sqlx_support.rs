@@ -21,7 +21,7 @@ macro_rules! impl_sqlx_for {
         impl<'q> sqlx::Encode<'q, $db> for Id {
             fn encode_by_ref(
                 &self,
-                buf: &mut <$db as sqlx::Database>::ArgumentBuffer<'q>,
+                buf: &mut <$db as sqlx::Database>::ArgumentBuffer,
             ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
                 <i64 as sqlx::Encode<'q, $db>>::encode_by_ref(&self.as_i64(), buf)
             }
