@@ -22,6 +22,15 @@ tokio = ["dep:tokio"]
 sqlx-postgres = ["dep:sqlx", "sqlx/postgres"]
 sqlx-mysql = ["dep:sqlx", "sqlx/mysql"]
 sqlx-sqlite = ["dep:sqlx", "sqlx/sqlite"]
+# Machine-ID leasing via Postgres advisory locks; needs a live connection
+# and a background task, hence the runtime dependencies.
+postgres-machine-id = [
+    "dep:sqlx",
+    "sqlx/postgres",
+    "sqlx/runtime-tokio",
+    "tokio",
+    "tokio/rt",
+]
 
 [dependencies]
 serde = { version = "1", optional = true }
@@ -36,3 +45,7 @@ sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runti
 [[test]]
 name = "sqlx_sqlite"
 required-features = ["sqlx-sqlite"]
+
+[[test]]
+name = "pg_machine_id"
+required-features = ["postgres-machine-id"]

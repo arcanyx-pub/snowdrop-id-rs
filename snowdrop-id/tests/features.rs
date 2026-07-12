@@ -3,12 +3,12 @@
 
 #[cfg(feature = "tokio")]
 mod tokio_feature {
-    use snowdrop_id::{Generator, MachineId};
+    use snowdrop_id::{IdGenerator, MachineId};
     use std::sync::Arc;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn generate_async_is_unique_and_monotonic_per_task() {
-        let generator = Arc::new(Generator::new(MachineId::new(3).unwrap()));
+        let generator = Arc::new(IdGenerator::new(MachineId::new(3).unwrap()));
         let tasks = 8;
         let per_task = 5_000;
 
@@ -43,10 +43,10 @@ mod tokio_feature {
 
 #[cfg(feature = "serde")]
 mod serde_feature {
-    use snowdrop_id::{MachineId, SnowdropId};
+    use snowdrop_id::{Id, MachineId};
 
-    fn sample() -> SnowdropId {
-        SnowdropId::from_parts(46_112_984, MachineId::new(0).unwrap(), 0).unwrap()
+    fn sample() -> Id {
+        Id::from_parts(46_112_984, MachineId::new(0).unwrap(), 0).unwrap()
     }
 
     #[test]
@@ -56,10 +56,10 @@ mod serde_feature {
 
     #[test]
     fn deserializes_from_base62_string() {
-        let id: SnowdropId = serde_json::from_str("\"37U5o\"").unwrap();
+        let id: Id = serde_json::from_str("\"37U5o\"").unwrap();
         assert_eq!(id, sample());
-        assert!(serde_json::from_str::<SnowdropId>("\"0abc\"").is_err());
-        assert!(serde_json::from_str::<SnowdropId>("42").is_err());
+        assert!(serde_json::from_str::<Id>("\"0abc\"").is_err());
+        assert!(serde_json::from_str::<Id>("42").is_err());
     }
 
     #[test]
@@ -67,7 +67,7 @@ mod serde_feature {
         #[derive(serde::Serialize, serde::Deserialize)]
         struct Row {
             #[serde(with = "snowdrop_id::serde_u64")]
-            id: SnowdropId,
+            id: Id,
         }
 
         let json = serde_json::to_string(&Row { id: sample() }).unwrap();

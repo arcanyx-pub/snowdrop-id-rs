@@ -1,4 +1,4 @@
-//! A process-global [`Generator`], for retrofits where injecting one isn't
+//! A process-global [`IdGenerator`], for retrofits where injecting one isn't
 //! practical.
 //!
 //! Configure once at server boot, then generate from anywhere:
@@ -16,7 +16,7 @@
 //!
 //! # Guidance
 //!
-//! Prefer passing a [`Generator`] (or storing it in your app state) where
+//! Prefer passing a [`IdGenerator`] (or storing it in your app state) where
 //! you can: an explicit dependency is easier to test — in particular, the
 //! global is always driven by the system clock, so a mock [`Clock`] cannot
 //! be injected through it. This module exists for the common migration
@@ -34,9 +34,9 @@
 
 use std::sync::OnceLock;
 
-use crate::{Epoch, GenerateError, Generator, MachineId, SnowdropId};
+use crate::{Epoch, GenerateError, Id, IdGenerator, MachineId};
 
-static GLOBAL: OnceLock<Generator> = OnceLock::new();
+static GLOBAL: OnceLock<IdGenerator> = OnceLock::new();
 
 /// Initializes the global generator with the default [`Epoch`].
 ///
@@ -52,12 +52,12 @@ pub fn init(machine_id: MachineId) -> Result<(), AlreadyInitialized> {
 /// the existing generator untouched.
 pub fn init_with(machine_id: MachineId, epoch: Epoch) -> Result<(), AlreadyInitialized> {
     GLOBAL
-        .set(Generator::builder(machine_id).epoch(epoch).build())
+        .set(IdGenerator::builder(machine_id).epoch(epoch).build())
         .map_err(|_| AlreadyInitialized)
 }
 
 /// Returns the global generator, or `None` if [`init`] has not been called.
-pub fn try_generator() -> Option<&'static Generator> {
+pub fn try_generator() -> Option<&'static IdGenerator> {
     GLOBAL.get()
 }
 
@@ -65,14 +65,14 @@ pub fn try_generator() -> Option<&'static Generator> {
 ///
 /// Use this for anything beyond plain [`generate`] — e.g.
 /// `global::generator().generate_async().await` with the `tokio` feature,
-/// or [`Generator::try_generate`].
+/// or [`IdGenerator::try_generate`].
 ///
 /// # Panics
 ///
 /// Panics if the global generator has not been initialized. This is
 /// deliberate: silently defaulting the machine ID could collide with
 /// another server. Call [`init`] at application startup.
-pub fn generator() -> &'static Generator {
+pub fn generator() -> &'static IdGenerator {
     GLOBAL.get().expect(
         "snowdrop_id::global is not initialized; \
          call snowdrop_id::global::init(machine_id) at application startup",
@@ -87,7 +87,7 @@ pub fn generator() -> &'static Generator {
 ///
 /// Panics if the global generator has not been initialized (see
 /// [`generator`]).
-pub fn generate() -> Result<SnowdropId, GenerateError> {
+pub fn generate() -> Result<Id, GenerateError> {
     generator().generate()
 }
 
@@ -101,7 +101,7 @@ pub fn generate() -> Result<SnowdropId, GenerateError> {
 /// Panics if the global generator has not been initialized (see
 /// [`generator`]).
 #[cfg(feature = "tokio")]
-pub async fn generate_async() -> Result<SnowdropId, GenerateError> {
+pub async fn generate_async() -> Result<Id, GenerateError> {
     generator().generate_async().await
 }
 

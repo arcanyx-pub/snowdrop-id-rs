@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A millisecond wall-clock source.
 ///
-/// [`Generator`](crate::Generator) is generic over this trait so tests can
+/// [`IdGenerator`](crate::IdGenerator) is generic over this trait so tests can
 /// drive the hold rule, sequence exhaustion, and clock-regression behavior
 /// deterministically. Production code uses the default [`SystemClock`].
 pub trait Clock: Send + Sync {

@@ -26,11 +26,11 @@ pub(crate) const TS_SHIFT: u32 = SEQ_BITS + MID_BITS;
 /// The external form is a short base62 string via [`encode`](Self::encode) /
 /// [`decode`](Self::decode), also exposed through `Display` and `FromStr`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SnowdropId(u64);
+pub struct Id(u64);
 
-impl SnowdropId {
+impl Id {
     /// The largest valid Snowdrop ID (`i64::MAX`).
-    pub const MAX: SnowdropId = SnowdropId(i64::MAX as u64);
+    pub const MAX: Id = Id(i64::MAX as u64);
 
     /// Assembles an ID from its fields.
     ///
@@ -40,14 +40,14 @@ impl SnowdropId {
         timestamp: u32,
         machine_id: MachineId,
         sequence: u32,
-    ) -> Result<SnowdropId, InvalidId> {
+    ) -> Result<Id, InvalidId> {
         if timestamp as u64 > TS_MASK {
             return Err(InvalidId::TimestampOutOfRange);
         }
         if sequence as u64 > SEQ_MASK {
             return Err(InvalidId::SequenceOutOfRange);
         }
-        Ok(SnowdropId::from_parts_unchecked(
+        Ok(Id::from_parts_unchecked(
             timestamp as u64,
             machine_id.get() as u64,
             sequence as u64,
@@ -55,9 +55,9 @@ impl SnowdropId {
     }
 
     /// Assembles an ID from field values already known to be in range.
-    pub(crate) const fn from_parts_unchecked(ts: u64, mid: u64, seq: u64) -> SnowdropId {
+    pub(crate) const fn from_parts_unchecked(ts: u64, mid: u64, seq: u64) -> Id {
         debug_assert!(ts <= TS_MASK && mid <= MID_MASK && seq <= SEQ_MASK);
-        SnowdropId((ts << TS_SHIFT) | (mid << MID_SHIFT) | seq)
+        Id((ts << TS_SHIFT) | (mid << MID_SHIFT) | seq)
     }
 
     /// The 31-bit timestamp field: 1024 ms windows since the epoch.
@@ -96,11 +96,11 @@ impl SnowdropId {
     }
 
     /// Creates an ID from its integer form, rejecting values with bit 63 set.
-    pub const fn from_u64(value: u64) -> Result<SnowdropId, InvalidId> {
+    pub const fn from_u64(value: u64) -> Result<Id, InvalidId> {
         if value > i64::MAX as u64 {
             return Err(InvalidId::SignBitSet);
         }
-        Ok(SnowdropId(value))
+        Ok(Id(value))
     }
 
     /// Encodes the ID to its base62 external form (per SPEC §6.2), without
@@ -120,8 +120,8 @@ impl SnowdropId {
     /// Rejects empty strings, strings longer than 11 characters, characters
     /// outside the base62 alphabet, values ≥ 2⁶³, and non-canonical leading
     /// zeros.
-    pub fn decode(s: &str) -> Result<SnowdropId, DecodeError> {
-        Ok(SnowdropId(untransform(base62::decode_str(s)?)))
+    pub fn decode(s: &str) -> Result<Id, DecodeError> {
+        Ok(Id(untransform(base62::decode_str(s)?)))
     }
 }
 
@@ -140,17 +140,17 @@ const fn untransform(v: u64) -> u64 {
     (ts << TS_SHIFT) | (mid << MID_SHIFT) | seq
 }
 
-impl fmt::Display for SnowdropId {
+impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.encode())
     }
 }
 
-impl fmt::Debug for SnowdropId {
+impl fmt::Debug for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "SnowdropId({} \"{}\" ts={} mid={} seq={})",
+            "Id({} \"{}\" ts={} mid={} seq={})",
             self.0,
             self.encode(),
             self.timestamp(),
@@ -160,46 +160,46 @@ impl fmt::Debug for SnowdropId {
     }
 }
 
-impl FromStr for SnowdropId {
+impl FromStr for Id {
     type Err = DecodeError;
 
-    fn from_str(s: &str) -> Result<SnowdropId, DecodeError> {
-        SnowdropId::decode(s)
+    fn from_str(s: &str) -> Result<Id, DecodeError> {
+        Id::decode(s)
     }
 }
 
-impl From<SnowdropId> for u64 {
-    fn from(id: SnowdropId) -> u64 {
+impl From<Id> for u64 {
+    fn from(id: Id) -> u64 {
         id.as_u64()
     }
 }
 
-impl From<SnowdropId> for i64 {
-    fn from(id: SnowdropId) -> i64 {
+impl From<Id> for i64 {
+    fn from(id: Id) -> i64 {
         id.as_i64()
     }
 }
 
-impl TryFrom<u64> for SnowdropId {
+impl TryFrom<u64> for Id {
     type Error = InvalidId;
 
-    fn try_from(value: u64) -> Result<SnowdropId, InvalidId> {
-        SnowdropId::from_u64(value)
+    fn try_from(value: u64) -> Result<Id, InvalidId> {
+        Id::from_u64(value)
     }
 }
 
-impl TryFrom<i64> for SnowdropId {
+impl TryFrom<i64> for Id {
     type Error = InvalidId;
 
-    fn try_from(value: i64) -> Result<SnowdropId, InvalidId> {
+    fn try_from(value: i64) -> Result<Id, InvalidId> {
         if value < 0 {
             return Err(InvalidId::SignBitSet);
         }
-        Ok(SnowdropId(value as u64))
+        Ok(Id(value as u64))
     }
 }
 
-/// The base62 external form of a [`SnowdropId`]: an 11-byte inline buffer,
+/// The base62 external form of a [`Id`]: an 11-byte inline buffer,
 /// no allocation. Derefs to `&str`.
 #[derive(Clone, Copy)]
 pub struct EncodedId {
@@ -263,7 +263,7 @@ impl PartialEq<&str> for EncodedId {
     }
 }
 
-/// Error constructing a [`SnowdropId`] from raw values.
+/// Error constructing a [`Id`] from raw values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum InvalidId {
@@ -290,7 +290,7 @@ impl fmt::Display for InvalidId {
 
 impl std::error::Error for InvalidId {}
 
-/// Error decoding a base62 string to a [`SnowdropId`].
+/// Error decoding a base62 string to a [`Id`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DecodeError {
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn field_roundtrip() {
-        let id = SnowdropId::from_parts(46_112_984, mid(613), 12_345).unwrap();
+        let id = Id::from_parts(46_112_984, mid(613), 12_345).unwrap();
         assert_eq!(id.timestamp(), 46_112_984);
         assert_eq!(id.machine_id(), mid(613));
         assert_eq!(id.sequence(), 12_345);
@@ -345,45 +345,45 @@ mod tests {
     #[test]
     fn from_parts_validates() {
         assert_eq!(
-            SnowdropId::from_parts(1 << 31, mid(0), 0),
+            Id::from_parts(1 << 31, mid(0), 0),
             Err(InvalidId::TimestampOutOfRange)
         );
         assert_eq!(
-            SnowdropId::from_parts(0, mid(0), 1 << 22),
+            Id::from_parts(0, mid(0), 1 << 22),
             Err(InvalidId::SequenceOutOfRange)
         );
     }
 
     #[test]
     fn integer_conversions() {
-        assert_eq!(SnowdropId::from_u64(1 << 63), Err(InvalidId::SignBitSet));
-        assert_eq!(SnowdropId::try_from(-1i64), Err(InvalidId::SignBitSet));
-        let id = SnowdropId::from_u64(42).unwrap();
+        assert_eq!(Id::from_u64(1 << 63), Err(InvalidId::SignBitSet));
+        assert_eq!(Id::try_from(-1i64), Err(InvalidId::SignBitSet));
+        let id = Id::from_u64(42).unwrap();
         assert_eq!(i64::from(id), 42);
         assert_eq!(u64::from(id), 42);
-        assert_eq!(SnowdropId::try_from(42i64).unwrap(), id);
+        assert_eq!(Id::try_from(42i64).unwrap(), id);
     }
 
     #[test]
     fn window_start() {
-        let id = SnowdropId::from_parts(1, mid(0), 0).unwrap();
-        assert_eq!(id.window_start_ms(Epoch::DEFAULT), 1_735_689_601_024);
+        let id = Id::from_parts(1, mid(0), 0).unwrap();
+        assert_eq!(id.window_start_ms(Epoch::DEFAULT), 1_767_225_601_024);
     }
 
     #[test]
     fn display_and_fromstr() {
-        let id = SnowdropId::from_parts(46_112_984, mid(0), 0).unwrap();
+        let id = Id::from_parts(46_112_984, mid(0), 0).unwrap();
         assert_eq!(id.to_string(), "37U5o");
-        assert_eq!("37U5o".parse::<SnowdropId>().unwrap(), id);
+        assert_eq!("37U5o".parse::<Id>().unwrap(), id);
         assert_eq!(id.encode(), "37U5o");
         assert_eq!(id.encode().len(), 5);
     }
 
     #[test]
     fn ordering_is_numeric() {
-        let a = SnowdropId::from_parts(100, mid(3), 7).unwrap();
-        let b = SnowdropId::from_parts(100, mid(3), 8).unwrap();
-        let c = SnowdropId::from_parts(101, mid(0), 0).unwrap();
+        let a = Id::from_parts(100, mid(3), 7).unwrap();
+        let b = Id::from_parts(100, mid(3), 8).unwrap();
+        let c = Id::from_parts(101, mid(0), 0).unwrap();
         assert!(a < b && b < c);
     }
 }

@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn rejects_overflow() {
-        // 2^63 exactly, one above SnowdropId range.
+        // 2^63 exactly, one above Id range.
         assert_eq!(decode_str("AzL8n0Y58m8"), Err(DecodeError::Overflow));
         // Largest 11-digit string, overflows u64 mid-parse.
         assert_eq!(decode_str("zzzzzzzzzzz"), Err(DecodeError::Overflow));

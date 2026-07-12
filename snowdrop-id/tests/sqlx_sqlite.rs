@@ -1,7 +1,7 @@
 //! Round-trip integration test for the sqlx `Type`/`Encode`/`Decode` impls,
 //! using an in-memory SQLite database. Runs with `--features sqlx-sqlite`.
 
-use snowdrop_id::{Generator, MachineId, SnowdropId};
+use snowdrop_id::{Id, IdGenerator, MachineId};
 use sqlx::{Row, SqlitePool};
 
 #[tokio::test]
@@ -12,7 +12,7 @@ async fn snowdrop_id_roundtrips_through_bigint_column() {
         .await
         .unwrap();
 
-    let generator = Generator::new(MachineId::new(9).unwrap());
+    let generator = IdGenerator::new(MachineId::new(9).unwrap());
     let mut ids = Vec::new();
     for n in 0..100 {
         let id = generator.generate().unwrap();
@@ -25,16 +25,16 @@ async fn snowdrop_id_roundtrips_through_bigint_column() {
         ids.push(id);
     }
 
-    // Typed decode straight back into SnowdropId, ordered by the BIGINT
+    // Typed decode straight back into Id, ordered by the BIGINT
     // column — which must equal generation order.
     let rows = sqlx::query("SELECT id FROM posts ORDER BY id")
         .fetch_all(&pool)
         .await
         .unwrap();
-    let fetched: Vec<SnowdropId> = rows.iter().map(|r| r.get("id")).collect();
+    let fetched: Vec<Id> = rows.iter().map(|r| r.get("id")).collect();
     assert_eq!(fetched, ids);
 
-    // Point lookup binding a SnowdropId parameter.
+    // Point lookup binding a Id parameter.
     let title: String = sqlx::query("SELECT title FROM posts WHERE id = ?")
         .bind(ids[42])
         .fetch_one(&pool)
@@ -57,7 +57,7 @@ async fn snowdrop_id_roundtrips_through_bigint_column() {
         .execute(&pool)
         .await
         .unwrap();
-    let result = sqlx::query_scalar::<_, SnowdropId>("SELECT id FROM posts WHERE id < 0")
+    let result = sqlx::query_scalar::<_, Id>("SELECT id FROM posts WHERE id < 0")
         .fetch_one(&pool)
         .await;
     assert!(result.is_err());

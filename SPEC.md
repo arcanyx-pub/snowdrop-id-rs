@@ -4,8 +4,8 @@
   <img src="assets/snowdrop.jpg" alt="Snowdrop, the Heeler puppy mascot, holding a snowdrop flower in a snowy forest" width="480">
 </p>
 
-**Version:** 1.0 (draft 2)
-**Date:** 2026-07-02
+**Version:** 1.0 (draft 3)
+**Date:** 2026-07-11
 **Status:** Draft
 
 This document specifies the Snowdrop ID format and its generation and
@@ -88,15 +88,15 @@ clock.
 The timestamp field counts 1024 ms windows since a deployment-defined
 **epoch**, expressed in milliseconds.
 
-- The default epoch is **2025-01-01T00:00:00Z** (Unix time
-  `1735689600000` ms). Implementations MUST use this epoch unless
+- The default epoch is **2026-01-01T00:00:00Z** (Unix time
+  `1767225600000` ms). Implementations MUST use this epoch unless
   explicitly configured otherwise.
 - The epoch MUST be configurable in milliseconds. All generators sharing
   an ID space MUST use the same epoch, and the epoch of an ID space MUST
   NOT change after IDs have been issued.
 - 31 bits of 1024 ms windows give a range of ~69.7 years. With the
   default epoch, the timestamp field exhausts at
-  **2094-09-07T15:47:35Z**.
+  **2095-09-07T15:47:35Z**.
 - For Snowflake interchangeability (§7.3), configure the epoch to equal
   the Snowflake epoch already in use in the deployment (e.g. Twitter's
   `1288834974657`).
@@ -116,7 +116,7 @@ The 10-bit machine ID distinguishes concurrent generators.
 - Machine IDs SHOULD be assigned from 0 upward: the string encoding
   (§6.4) is shorter for smaller machine IDs. Machine IDs 0–25 get
   6-character strings for the first ID of each window (5 characters for
-  machine ID 0 until 2054); higher machine IDs get 7.
+  machine ID 0 until 2055); higher machine IDs get 7.
 
 ### 5.2 Generator state and algorithm
 
@@ -278,7 +278,7 @@ ID, and date, in that order of dominance:
 
 | Condition                        | Maximum length                       |
 |----------------------------------|--------------------------------------|
-| `sequence = 0`, `machine_id = 0` | 5 until 2054-09-23, then 6 (default epoch) |
+| `sequence = 0`, `machine_id = 0` | 5 until 2055-09-23, then 6 (default epoch) |
 | `sequence = 0`, `machine_id ≤ 25`| 6                                    |
 | `sequence = 0`, any machine ID   | 7                                    |
 | `sequence ≤ 98`                  | 8                                    |
@@ -287,7 +287,7 @@ ID, and date, in that order of dominance:
 | any valid ID                     | 11                                   |
 
 The first ID issued in any given window therefore encodes to at most 7
-characters — 6 for machine IDs 0–25, and 5 for machine ID 0 until 2054.
+characters — 6 for machine IDs 0–25, and 5 for machine ID 0 until 2055.
 Under sustained load, length grows logarithmically with the per-window
 ID rate: about 8 characters up to ~98 IDs/window, 9 up to ~6 k, 10 up to
 ~380 k per generator.
@@ -352,10 +352,10 @@ identifiers (e.g., UUIDv4) instead, or in addition.
 
 ## 9. Test Vectors
 
-All vectors use the default epoch (2025-01-01T00:00:00Z =
-`1735689600000` ms). The `ms` column is milliseconds since the epoch;
+All vectors use the default epoch (2026-01-01T00:00:00Z =
+`1767225600000` ms). The `ms` column is milliseconds since the epoch;
 `timestamp = ms >> 10`. `ms = 47219696000` corresponds to
-2026-07-01T12:34:56Z.
+2027-07-01T12:34:56Z.
 
 | ms            | timestamp  | machine | seq     | ID (decimal)        | ID (hex)             | transformed (hex)    | base62        |
 |---------------|------------|---------|---------|---------------------|----------------------|----------------------|---------------|
