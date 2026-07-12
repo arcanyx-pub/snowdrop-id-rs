@@ -15,7 +15,8 @@ versions follow [SemVer](https://semver.org).
   different wall-clock times under the new one. Spec bumped to v1.0 draft 3.
 - The `sqlx-*` features now target sqlx **0.9** (a public dependency of
   those features; sqlx 0.8 users should stay on snowdrop-id 0.1.x until
-  they upgrade).
+  they upgrade). Core MSRV stays 1.85; the sqlx-backed features require
+  Rust 1.94+ via sqlx.
 
 ### Added
 

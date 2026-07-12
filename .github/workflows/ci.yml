@@ -60,7 +60,7 @@ jobs:
       - run: cargo doc --workspace --all-features --no-deps
 
   msrv:
-    name: MSRV (1.85)
+    name: MSRV (1.85, core features)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,4 +68,6 @@ jobs:
         with:
           toolchain: "1.85"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets --all-features
+      # The sqlx-backed features inherit sqlx 0.9's higher MSRV (1.94), so
+      # the crate's own 1.85 floor is checked with core features only.
+      - run: cargo check --workspace --all-targets --features snowdrop-id/tokio,snowdrop-id/serde
