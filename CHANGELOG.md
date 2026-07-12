@@ -13,6 +13,9 @@ versions follow [SemVer](https://semver.org).
 - Changed the default epoch from 2025-01-01 to **2026-01-01T00:00:00Z**
   (`1767225600000` ms). IDs generated under the old default decode to
   different wall-clock times under the new one. Spec bumped to v1.0 draft 3.
+- The `sqlx-*` features now target sqlx **0.9** (a public dependency of
+  those features; sqlx 0.8 users should stay on snowdrop-id 0.1.x until
+  they upgrade).
 
 ### Added
 
