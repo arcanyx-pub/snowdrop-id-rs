@@ -7,7 +7,7 @@
 
 use std::process::ExitCode;
 
-use snowdrop_id::{Epoch, Generator, MachineId, SnowdropId};
+use snowdrop_id::{Epoch, Id, IdGenerator, MachineId};
 
 const USAGE: &str = "\
 snowdrop — generate, encode, and decode Snowdrop IDs
@@ -25,8 +25,8 @@ COMMANDS:
 OPTIONS:
     -m, --machine-id <0-1023>    Machine ID to stamp into IDs [default: 0]
     -n, --count <N>              Number of IDs to generate [default: 1]
-        --epoch-ms <MS>          Epoch in Unix ms [default: 1735689600000,
-                                 i.e. 2025-01-01T00:00:00Z]
+        --epoch-ms <MS>          Epoch in Unix ms [default: 1767225600000,
+                                 i.e. 2026-01-01T00:00:00Z]
     -h, --help                   Print this help
     -V, --version                Print version
 ";
@@ -131,7 +131,7 @@ fn generate(args: &[String]) -> Result<(), Error> {
     if let Some(extra) = options.positionals.first() {
         return Err(usage(format!("unexpected argument `{extra}`")));
     }
-    let generator = Generator::builder(options.machine_id)
+    let generator = IdGenerator::builder(options.machine_id)
         .epoch(options.epoch)
         .build();
     for _ in 0..options.count {
@@ -149,7 +149,7 @@ fn encode(args: &[String]) -> Result<(), Error> {
         return Err(usage("encode takes exactly one integer ID"));
     };
     let value = parse_u64(raw).ok_or_else(|| usage(format!("invalid integer ID `{raw}`")))?;
-    let id = SnowdropId::from_u64(value).map_err(|e| Error::Runtime(e.to_string()))?;
+    let id = Id::from_u64(value).map_err(|e| Error::Runtime(e.to_string()))?;
     println!("{}", id.encode());
     Ok(())
 }
@@ -159,7 +159,7 @@ fn decode(args: &[String]) -> Result<(), Error> {
     let [raw] = options.positionals.as_slice() else {
         return Err(usage("decode takes exactly one base62 string"));
     };
-    let id = SnowdropId::decode(raw).map_err(|e| Error::Runtime(format!("`{raw}`: {e}")))?;
+    let id = Id::decode(raw).map_err(|e| Error::Runtime(format!("`{raw}`: {e}")))?;
     let window_start = id.window_start_ms(options.epoch);
     println!("id:           {}", id.as_u64());
     println!("hex:          {:#018x}", id.as_u64());
@@ -184,7 +184,7 @@ fn parse_u64(raw: &str) -> Option<u64> {
     }
 }
 
-/// Formats Unix milliseconds as ISO 8601 UTC, e.g. `2026-07-01T12:34:55.616Z`.
+/// Formats Unix milliseconds as ISO 8601 UTC, e.g. `2027-07-01T12:34:55.616Z`.
 /// Date conversion via the days-to-civil algorithm (Howard Hinnant).
 fn format_iso8601_ms(unix_ms: u64) -> String {
     let secs = unix_ms / 1000;
@@ -219,12 +219,12 @@ mod tests {
     fn iso8601_formatting() {
         assert_eq!(format_iso8601_ms(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(
-            format_iso8601_ms(1_735_689_600_000),
-            "2025-01-01T00:00:00.000Z"
+            format_iso8601_ms(1_767_225_600_000),
+            "2026-01-01T00:00:00.000Z"
         );
-        // 2026-07-01T12:34:56Z rounded down to its 1024 ms window start.
-        let window_start = 1_735_689_600_000 + ((47_219_696_000u64 >> 10) << 10);
-        assert_eq!(format_iso8601_ms(window_start), "2026-07-01T12:34:55.616Z");
+        // 2027-07-01T12:34:56Z rounded down to its 1024 ms window start.
+        let window_start = 1_767_225_600_000 + ((47_219_696_000u64 >> 10) << 10);
+        assert_eq!(format_iso8601_ms(window_start), "2027-07-01T12:34:55.616Z");
         assert_eq!(
             format_iso8601_ms(951_827_696_789),
             "2000-02-29T12:34:56.789Z"

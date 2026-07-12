@@ -7,14 +7,14 @@
 //! # Quick start
 //!
 //! ```
-//! use snowdrop_id::{Generator, MachineId, SnowdropId};
+//! use snowdrop_id::{IdGenerator, MachineId, Id};
 //!
-//! let generator = Generator::new(MachineId::new(0).unwrap());
+//! let generator = IdGenerator::new(MachineId::new(0).unwrap());
 //! let id = generator.generate().unwrap();
 //!
 //! // Short base62 external form; round-trips losslessly.
 //! let s = id.encode();
-//! assert_eq!(s.parse::<SnowdropId>().unwrap(), id);
+//! assert_eq!(s.parse::<Id>().unwrap(), id);
 //!
 //! // BIGINT-safe integer form; numeric order is time order.
 //! let n: i64 = id.as_i64();
@@ -23,17 +23,20 @@
 //!
 //! # Feature flags
 //!
-//! - `tokio` — adds [`Generator::generate_async`], which awaits instead of
+//! - `tokio` — adds [`IdGenerator::generate_async`], which awaits instead of
 //!   blocking the thread on (rare) sequence exhaustion.
-//! - `serde` — `Serialize`/`Deserialize` for [`SnowdropId`] as the base62
+//! - `serde` — `Serialize`/`Deserialize` for [`Id`] as the base62
 //!   string; numeric opt-in via [`serde_u64`].
 //! - `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` — `sqlx` `Type`/`Encode`/
-//!   `Decode` impls mapping [`SnowdropId`] to `BIGINT`.
+//!   `Decode` impls mapping [`Id`] to `BIGINT`.
+//! - `postgres-machine-id` — machine IDs leased via Postgres advisory
+//!   locks ([`PgMachineIdLease`], [`PgIdGenerator`]), for clusters with no
+//!   static machine-ID assignment.
 //!
 //! A companion command-line tool is available as the `snowdrop-id-cli`
 //! crate (`cargo install snowdrop-id-cli`).
 //!
-//! For retrofits where injecting a [`Generator`] isn't practical, the
+//! For retrofits where injecting an [`IdGenerator`] isn't practical, the
 //! [`global`] module provides a process-global generator configured once
 //! at startup.
 
@@ -58,11 +61,20 @@ mod serde_support;
 ))]
 mod sqlx_support;
 
+#[cfg(feature = "postgres-machine-id")]
+mod pg_machine_id;
+
 pub use clock::{Clock, SystemClock};
 pub use epoch::Epoch;
-pub use generator::{GenerateError, Generator, GeneratorBuilder, TryGenerateError};
-pub use id::{DecodeError, EncodedId, InvalidId, SnowdropId};
+pub use generator::{GenerateError, IdGenerator, IdGeneratorBuilder, TryGenerateError};
+pub use id::{DecodeError, EncodedId, Id, InvalidId};
 pub use machine::MachineId;
 
 #[cfg(feature = "serde")]
 pub use serde_support::serde_u64;
+
+#[cfg(feature = "postgres-machine-id")]
+pub use pg_machine_id::{
+    DEFAULT_NAMESPACE, LeaseLossPolicy, PgGenerateError, PgIdGenerator, PgLeaseConfig,
+    PgLeaseError, PgMachineIdLease,
+};

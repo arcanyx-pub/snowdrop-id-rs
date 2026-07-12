@@ -15,20 +15,20 @@ $ cargo install snowdrop-id-cli
 
 ```console
 $ snowdrop generate -n 2
-198358378861297664	37mXl
-198358378861297665	ciYFJPE
+69665877074640896	163eZ
+69665877074640897	ciLhXHb
 
-$ snowdrop decode 37mXl
-id:           198358378756440064
-hex:          0x02c0b5e500000000
-base62:       37mXl
-timestamp:    46183909
+$ snowdrop decode 163eZ
+id:           69665877074640896
+hex:          0x00f780bf00000000
+base62:       163eZ
+timestamp:    16220351
 machine-id:   0
 sequence:     0
-window-start: 2026-07-02T08:45:22.816Z (1782981922816 ms, epoch 1735689600000 ms)
+window-start: 2026-07-12T05:47:19.424Z (1783835239424 ms, epoch 1767225600000 ms)
 
-$ snowdrop encode 198358378756440064
-37mXl
+$ snowdrop encode 69665877074640896
+163eZ
 ```
 
 Run `snowdrop --help` for all options (machine ID, count, custom epoch).

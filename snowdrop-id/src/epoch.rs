@@ -10,9 +10,9 @@ use core::fmt;
 pub struct Epoch(u64);
 
 impl Epoch {
-    /// The default epoch: 2025-01-01T00:00:00Z. Timestamps exhaust at
-    /// 2094-09-07T15:47:35Z.
-    pub const DEFAULT: Epoch = Epoch(1_735_689_600_000);
+    /// The default epoch: 2026-01-01T00:00:00Z. Timestamps exhaust at
+    /// 2095-09-07T15:47:35Z.
+    pub const DEFAULT: Epoch = Epoch(1_767_225_600_000);
 
     /// Twitter's Snowflake epoch: 2010-11-04T01:42:54.657Z. Use for
     /// interchangeability with classic Snowflake deployments.

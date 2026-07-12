@@ -1,6 +1,6 @@
 //! The normative test vectors from SPEC.md §9, verified in both directions.
 
-use snowdrop_id::{Epoch, MachineId, SnowdropId};
+use snowdrop_id::{Epoch, Id, MachineId};
 
 struct Vector {
     ms: u64,
@@ -88,7 +88,7 @@ fn spec_vectors_encode() {
             "ms→timestamp for {}",
             v.base62
         );
-        let id = SnowdropId::from_parts(v.timestamp, mid, v.seq).unwrap();
+        let id = Id::from_parts(v.timestamp, mid, v.seq).unwrap();
         assert_eq!(id.as_u64(), v.id, "assembled ID for {}", v.base62);
         assert_eq!(id.encode(), v.base62, "encoding of {}", v.id);
     }
@@ -97,7 +97,7 @@ fn spec_vectors_encode() {
 #[test]
 fn spec_vectors_decode() {
     for v in VECTORS {
-        let id = SnowdropId::decode(v.base62).unwrap();
+        let id = Id::decode(v.base62).unwrap();
         assert_eq!(id.as_u64(), v.id, "decoded value of {}", v.base62);
         assert_eq!(id.timestamp(), v.timestamp);
         assert_eq!(id.machine_id().get(), v.machine);
@@ -119,9 +119,9 @@ fn full_bijection_sweep() {
         x = x
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        let id = SnowdropId::from_u64(x >> 1).unwrap();
+        let id = Id::from_u64(x >> 1).unwrap();
         let s = id.encode();
         assert!(s.len() <= 11);
-        assert_eq!(SnowdropId::decode(&s).unwrap(), id);
+        assert_eq!(Id::decode(&s).unwrap(), id);
     }
 }

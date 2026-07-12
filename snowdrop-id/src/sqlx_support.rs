@@ -1,14 +1,14 @@
-//! `sqlx` support: [`SnowdropId`] maps to `BIGINT` (`i64`).
+//! `sqlx` support: [`Id`] maps to `BIGINT` (`i64`).
 //!
 //! Enabled per database via the `sqlx-postgres`, `sqlx-mysql`, and
 //! `sqlx-sqlite` features. Decoding rejects negative values, which cannot
 //! be valid Snowdrop IDs.
 
-use crate::id::SnowdropId;
+use crate::id::Id;
 
 macro_rules! impl_sqlx_for {
     ($db:ty) => {
-        impl sqlx::Type<$db> for SnowdropId {
+        impl sqlx::Type<$db> for Id {
             fn type_info() -> <$db as sqlx::Database>::TypeInfo {
                 <i64 as sqlx::Type<$db>>::type_info()
             }
@@ -18,7 +18,7 @@ macro_rules! impl_sqlx_for {
             }
         }
 
-        impl<'q> sqlx::Encode<'q, $db> for SnowdropId {
+        impl<'q> sqlx::Encode<'q, $db> for Id {
             fn encode_by_ref(
                 &self,
                 buf: &mut <$db as sqlx::Database>::ArgumentBuffer<'q>,
@@ -27,12 +27,12 @@ macro_rules! impl_sqlx_for {
             }
         }
 
-        impl<'r> sqlx::Decode<'r, $db> for SnowdropId {
+        impl<'r> sqlx::Decode<'r, $db> for Id {
             fn decode(
                 value: <$db as sqlx::Database>::ValueRef<'r>,
-            ) -> Result<SnowdropId, sqlx::error::BoxDynError> {
+            ) -> Result<Id, sqlx::error::BoxDynError> {
                 let raw = <i64 as sqlx::Decode<'r, $db>>::decode(value)?;
-                Ok(SnowdropId::try_from(raw)?)
+                Ok(Id::try_from(raw)?)
             }
         }
     };

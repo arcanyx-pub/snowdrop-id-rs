@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use crate::clock::{Clock, SystemClock};
 use crate::epoch::Epoch;
-use crate::id::{SEQ_MASK, SnowdropId, TS_MASK};
+use crate::id::{Id, SEQ_MASK, TS_MASK};
 use crate::machine::MachineId;
 
 /// A lock-free Snowdrop ID generator.
 ///
-/// `Generator` is `Send + Sync` and generates through `&self`: share one
+/// `IdGenerator` is `Send + Sync` and generates through `&self`: share one
 /// instance across threads or tasks via `Arc` or a `static`. All state fits
 /// in a single atomic word updated with a compare-exchange loop — there is
 /// no mutex.
@@ -17,7 +17,7 @@ use crate::machine::MachineId;
 /// Per SPEC §5, the generator holds its last-used timestamp if the wall
 /// clock steps backwards, and waits out the (rare) exhaustion of the 22-bit
 /// sequence within one 1024 ms window.
-pub struct Generator<C: Clock = SystemClock> {
+pub struct IdGenerator<C: Clock = SystemClock> {
     machine_id: MachineId,
     epoch: Epoch,
     clock: C,
@@ -35,15 +35,15 @@ const fn unpack(state: u64) -> (u64, u64) {
     ((state >> 22) - 1, state & SEQ_MASK)
 }
 
-impl Generator<SystemClock> {
+impl IdGenerator<SystemClock> {
     /// Creates a generator with the default epoch and system clock.
-    pub fn new(machine_id: MachineId) -> Generator<SystemClock> {
-        Generator::builder(machine_id).build()
+    pub fn new(machine_id: MachineId) -> IdGenerator<SystemClock> {
+        IdGenerator::builder(machine_id).build()
     }
 
     /// Starts building a generator with a custom epoch or clock.
-    pub fn builder(machine_id: MachineId) -> GeneratorBuilder<SystemClock> {
-        GeneratorBuilder {
+    pub fn builder(machine_id: MachineId) -> IdGeneratorBuilder<SystemClock> {
+        IdGeneratorBuilder {
             machine_id,
             epoch: Epoch::DEFAULT,
             clock: SystemClock,
@@ -51,7 +51,7 @@ impl Generator<SystemClock> {
     }
 }
 
-impl<C: Clock> Generator<C> {
+impl<C: Clock> IdGenerator<C> {
     /// The machine ID this generator stamps into every ID.
     pub fn machine_id(&self) -> MachineId {
         self.machine_id
@@ -68,7 +68,7 @@ impl<C: Clock> Generator<C> {
     /// were issued in the current 1024 ms window (retry after the window
     /// ends), and [`TryGenerateError::EpochExhausted`] once the 31-bit
     /// timestamp field overflows (permanent).
-    pub fn try_generate(&self) -> Result<SnowdropId, TryGenerateError> {
+    pub fn try_generate(&self) -> Result<Id, TryGenerateError> {
         loop {
             let now_ms = self.clock.unix_ms();
             let t_now = now_ms.saturating_sub(self.epoch.unix_ms()) >> 10;
@@ -102,7 +102,7 @@ impl<C: Clock> Generator<C> {
                 .compare_exchange_weak(current, pack(ts, seq), Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
-                return Ok(SnowdropId::from_parts_unchecked(
+                return Ok(Id::from_parts_unchecked(
                     ts,
                     self.machine_id.get() as u64,
                     seq,
@@ -118,7 +118,7 @@ impl<C: Clock> Generator<C> {
     /// (a sustained ~4M IDs/s), where it sleeps until the window ends —
     /// less than 1.024 s unless the clock is being held (SPEC §5.3). Errors
     /// only when the timestamp field is permanently exhausted.
-    pub fn generate(&self) -> Result<SnowdropId, GenerateError> {
+    pub fn generate(&self) -> Result<Id, GenerateError> {
         loop {
             match self.try_generate() {
                 Ok(id) => return Ok(id),
@@ -136,7 +136,7 @@ impl<C: Clock> Generator<C> {
     /// sequence exhaustion. Semantics are otherwise identical to
     /// [`generate`](Self::generate).
     #[cfg(feature = "tokio")]
-    pub async fn generate_async(&self) -> Result<SnowdropId, GenerateError> {
+    pub async fn generate_async(&self) -> Result<Id, GenerateError> {
         loop {
             match self.try_generate() {
                 Ok(id) => return Ok(id),
@@ -151,33 +151,33 @@ impl<C: Clock> Generator<C> {
     }
 }
 
-impl<C: Clock> fmt::Debug for Generator<C> {
+impl<C: Clock> fmt::Debug for IdGenerator<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Generator")
+        f.debug_struct("IdGenerator")
             .field("machine_id", &self.machine_id)
             .field("epoch", &self.epoch)
             .finish_non_exhaustive()
     }
 }
 
-/// Builder for a [`Generator`] with a custom [`Epoch`] or [`Clock`].
+/// Builder for a [`IdGenerator`] with a custom [`Epoch`] or [`Clock`].
 #[derive(Debug, Clone)]
-pub struct GeneratorBuilder<C: Clock = SystemClock> {
+pub struct IdGeneratorBuilder<C: Clock = SystemClock> {
     machine_id: MachineId,
     epoch: Epoch,
     clock: C,
 }
 
-impl<C: Clock> GeneratorBuilder<C> {
+impl<C: Clock> IdGeneratorBuilder<C> {
     /// Sets the epoch (default: [`Epoch::DEFAULT`]).
-    pub fn epoch(mut self, epoch: Epoch) -> GeneratorBuilder<C> {
+    pub fn epoch(mut self, epoch: Epoch) -> IdGeneratorBuilder<C> {
         self.epoch = epoch;
         self
     }
 
     /// Sets the clock source (default: [`SystemClock`]).
-    pub fn clock<D: Clock>(self, clock: D) -> GeneratorBuilder<D> {
-        GeneratorBuilder {
+    pub fn clock<D: Clock>(self, clock: D) -> IdGeneratorBuilder<D> {
+        IdGeneratorBuilder {
             machine_id: self.machine_id,
             epoch: self.epoch,
             clock,
@@ -185,8 +185,8 @@ impl<C: Clock> GeneratorBuilder<C> {
     }
 
     /// Builds the generator.
-    pub fn build(self) -> Generator<C> {
-        Generator {
+    pub fn build(self) -> IdGenerator<C> {
+        IdGenerator {
             machine_id: self.machine_id,
             epoch: self.epoch,
             clock: self.clock,
@@ -195,7 +195,7 @@ impl<C: Clock> GeneratorBuilder<C> {
     }
 }
 
-/// Error from [`Generator::generate`] / [`Generator::generate_async`].
+/// Error from [`IdGenerator::generate`] / [`IdGenerator::generate_async`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum GenerateError {
@@ -217,7 +217,7 @@ impl fmt::Display for GenerateError {
 
 impl std::error::Error for GenerateError {}
 
-/// Error from [`Generator::try_generate`].
+/// Error from [`IdGenerator::try_generate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TryGenerateError {
@@ -273,10 +273,10 @@ mod tests {
         MachineId::new(v).unwrap()
     }
 
-    fn mock_generator(machine: u16) -> (Generator<MockClock>, MockClock) {
+    fn mock_generator(machine: u16) -> (IdGenerator<MockClock>, MockClock) {
         let clock = MockClock::default();
         clock.set(Epoch::DEFAULT.unix_ms());
-        let generator = Generator::builder(mid(machine))
+        let generator = IdGenerator::builder(mid(machine))
             .clock(clock.clone())
             .build();
         (generator, clock)
@@ -391,7 +391,7 @@ mod tests {
     fn concurrent_generation_is_unique_and_per_thread_monotonic() {
         use std::collections::HashSet;
 
-        let generator = Arc::new(Generator::new(mid(42)));
+        let generator = Arc::new(IdGenerator::new(mid(42)));
         let threads = 8;
         let per_thread = 20_000;
 
