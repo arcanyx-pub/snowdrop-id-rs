@@ -4,6 +4,14 @@ Notable changes to the `snowdrop-id` and `snowdrop-id-cli` crates (versioned
 in lockstep). Format follows [Keep a Changelog](https://keepachangelog.com);
 versions follow [SemVer](https://semver.org).
 
+## [0.2.1] - 2026-07-14
+
+### Fixed
+
+- Refreshed `Cargo.lock` to replace the yanked `spin` 0.9.8 — a transitive
+  dependency via `flume` / `sqlx-sqlite` — with 0.9.9. No API or behavior
+  changes.
+
 ## [0.2.0] - 2026-07-11
 
 ### Breaking
