@@ -65,15 +65,28 @@ snowdrop_id::global::init(MachineId::new(0).unwrap())?; // in main()
 let id = snowdrop_id::global::generate()?;              // anywhere else
 ```
 
-With the `postgres-machine-id` feature, clusters can lease machine IDs
-from Postgres advisory locks instead of assigning them statically — the
-lock is held by a dedicated connection, re-acquired automatically after
-connection loss, and released if the process dies:
+With the `postgres-machine-id` feature, clusters with no static machine-ID
+assignment can lease one from a Postgres table. A worker claims the lowest
+free machine ID, a background task heartbeats to hold the lease, and the ID
+is released on drop (or reclaimed after the lease expires if the process
+dies). Every operation is a single pooled statement — no session state — so
+it works through PgBouncer in any pooling mode and survives a primary
+failover:
 
 ```rust
-let generator = PgIdGenerator::acquire("postgres://…".parse()?).await?;
+use snowdrop_id::PgIdGenerator;
+use sqlx::PgPool;
+
+let pool = PgPool::connect("postgres://…").await?;
+let generator = PgIdGenerator::acquire(pool).await?; // claims the lowest free ID
 let id = generator.generate()?;
 ```
+
+The generator refuses to issue IDs (`PgGenerateError::MachineIdLeaseLost`)
+whenever it cannot prove its lease is still held, so a machine ID is never
+used by two live workers at once. The lease table is created automatically on
+first use; pass a custom table or epoch via `PgIdGenerator::builder(pool)`.
+See [the design doc](docs/pg-machine-id-leasing.md) for the full rationale.
 
 ### Feature flags
 
@@ -82,7 +95,7 @@ let id = generator.generate()?;
 | `tokio` | `IdGenerator::generate_async()` |
 | `serde` | `Serialize`/`Deserialize` as the base62 string; numeric via `serde_u64` |
 | `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` | `sqlx` `Type`/`Encode`/`Decode` as `BIGINT` |
-| `postgres-machine-id` | machine IDs leased via Postgres advisory locks |
+| `postgres-machine-id` | machine IDs leased from a Postgres table (pooler- and failover-safe) |
 
 The core crate and CLI support Rust 1.85+; the sqlx-backed features
 (`sqlx-*`, `postgres-machine-id`) require Rust 1.94+ via sqlx 0.9.

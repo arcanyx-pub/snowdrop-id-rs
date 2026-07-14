@@ -20,10 +20,14 @@ versions follow [SemVer](https://semver.org).
 
 ### Added
 
-- `postgres-machine-id` feature: machine IDs leased via Postgres advisory
-  locks. `PgMachineIdLease` (guard) and `PgIdGenerator` (bundled generator)
-  with connection keepalive, automatic lock re-acquisition, and a
-  configurable `LeaseLossPolicy` (default: `Poison`).
+- `postgres-machine-id` feature: machine IDs leased from a Postgres table,
+  for clusters with no static machine-ID assignment. `PgMachineIdLease`
+  (guard) and `PgIdGenerator` (bundled generator) claim the lowest free ID
+  through a connection pool, heartbeat to hold the lease, and release it on
+  drop; a generator stops issuing IDs while its lease is not confirmed held,
+  so no two live workers share a machine ID. Every operation is a single
+  pooled statement, so it works under any PgBouncer pooling mode and survives
+  a primary failover. See `docs/pg-machine-id-leasing.md`.
 - This changelog, and a bit-layout diagram in the README.
 
 ## [0.1.2] - 2026-07-08
