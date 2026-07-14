@@ -22,8 +22,8 @@ tokio = ["dep:tokio"]
 sqlx-postgres = ["dep:sqlx", "sqlx/postgres"]
 sqlx-mysql = ["dep:sqlx", "sqlx/mysql"]
 sqlx-sqlite = ["dep:sqlx", "sqlx/sqlite"]
-# Machine-ID leasing via Postgres advisory locks; needs a live connection
-# and a background task, hence the runtime dependencies.
+# Machine-ID leasing from a Postgres table; needs a connection pool and a
+# background heartbeat task, hence the runtime dependencies.
 postgres-machine-id = [
     "dep:sqlx",
     "sqlx/postgres",

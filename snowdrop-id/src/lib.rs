@@ -29,9 +29,9 @@
 //!   string; numeric opt-in via [`serde_u64`].
 //! - `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` — `sqlx` `Type`/`Encode`/
 //!   `Decode` impls mapping [`Id`] to `BIGINT`.
-//! - `postgres-machine-id` — machine IDs leased via Postgres advisory
-//!   locks ([`PgMachineIdLease`], [`PgIdGenerator`]), for clusters with no
-//!   static machine-ID assignment.
+//! - `postgres-machine-id` — machine IDs leased from a Postgres table
+//!   ([`PgMachineIdLease`], [`PgIdGenerator`]), for clusters with no static
+//!   machine-ID assignment; pooler- and failover-safe.
 //!
 //! A companion command-line tool is available as the `snowdrop-id-cli`
 //! crate (`cargo install snowdrop-id-cli`).
@@ -75,6 +75,6 @@ pub use serde_support::serde_u64;
 
 #[cfg(feature = "postgres-machine-id")]
 pub use pg_machine_id::{
-    DEFAULT_NAMESPACE, LeaseLossPolicy, PgGenerateError, PgIdGenerator, PgLeaseConfig,
-    PgLeaseError, PgMachineIdLease,
+    DEFAULT_TABLE, PgGenerateError, PgIdGenerator, PgIdGeneratorBuilder, PgLeaseError,
+    PgMachineIdLease, PgMachineIdLeaseBuilder,
 };

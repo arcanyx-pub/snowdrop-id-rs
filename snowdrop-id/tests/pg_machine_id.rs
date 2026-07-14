@@ -1,21 +1,18 @@
-//! Integration tests for Postgres advisory-lock machine-ID leasing.
+//! Integration tests for Postgres lease-table machine-ID assignment.
 //!
 //! Require a live Postgres: set `SNOWDROP_TEST_PG_URL` (e.g.
 //! `postgres://postgres:postgres@localhost:5432/postgres`); tests skip
-//! silently when it is unset. Each test uses a distinct lock namespace so
-//! they can run concurrently against one database.
+//! silently when it is unset. Each test uses a distinct table so they are
+//! isolated and can run concurrently against one database.
 
 use std::time::{Duration, Instant};
 
-use snowdrop_id::{
-    Epoch, LeaseLossPolicy, PgIdGenerator, PgLeaseConfig, PgLeaseError, PgMachineIdLease,
-};
-use sqlx::Connection;
-use sqlx::postgres::{PgConnectOptions, PgConnection};
+use snowdrop_id::{PgIdGenerator, PgLeaseError, PgMachineIdLease};
+use sqlx::PgPool;
 
-fn pg_options() -> Option<PgConnectOptions> {
+async fn pool() -> Option<PgPool> {
     match std::env::var("SNOWDROP_TEST_PG_URL") {
-        Ok(url) => Some(url.parse().expect("invalid SNOWDROP_TEST_PG_URL")),
+        Ok(url) => Some(PgPool::connect(&url).await.expect("connect failed")),
         Err(_) => {
             eprintln!("skipping: SNOWDROP_TEST_PG_URL not set");
             None
@@ -23,67 +20,84 @@ fn pg_options() -> Option<PgConnectOptions> {
     }
 }
 
-/// The pid of the session holding the 64-bit advisory lock `key`, if any.
-/// (Postgres stores the key split as classid = high 32 bits, objid = low
-/// 32 bits; bigint shifts are pure bit ops, so reassembly can't overflow.)
-async fn lock_holder(admin: &mut PgConnection, key: i64) -> Option<i32> {
-    sqlx::query_scalar(
-        "SELECT pid FROM pg_locks \
-         WHERE locktype = 'advisory' \
-           AND ((classid::int8 << 32) | objid::int8) = $1::int8",
-    )
-    .bind(key)
-    .fetch_optional(admin)
-    .await
-    .expect("pg_locks query failed")
+/// Fresh, empty table state for a test: drop any leftover from a prior run so
+/// auto-create rebuilds it prepopulated.
+async fn reset(pool: &PgPool, table: &str) {
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+        .execute(pool)
+        .await
+        .expect("drop failed");
 }
 
 #[tokio::test]
-async fn leases_lowest_free_machine_ids_and_releases_on_drop() {
-    let Some(options) = pg_options() else { return };
-    let config = || PgLeaseConfig::new().namespace(-0x1000_0000_0001);
+async fn leases_lowest_free_and_releases_on_drop() {
+    let Some(pool) = pool().await else { return };
+    let table = "snowdrop_test_lease_release";
+    reset(&pool, table).await;
 
-    let a = PgMachineIdLease::acquire_with(options.clone(), config())
+    let a = PgMachineIdLease::builder(pool.clone())
+        .table_name(table)
+        .unwrap()
+        .build()
         .await
         .unwrap();
-    let b = PgMachineIdLease::acquire_with(options.clone(), config())
+    let b = PgMachineIdLease::builder(pool.clone())
+        .table_name(table)
+        .unwrap()
+        .build()
         .await
         .unwrap();
     assert_eq!(a.machine_id().get(), 0);
     assert_eq!(b.machine_id().get(), 1);
     assert!(!a.is_poisoned());
 
-    // Dropping releases the lock server-side; ID 0 becomes leasable again
-    // (allow the server a moment to clean up the terminated session).
+    // Dropping best-effort releases the row; machine ID 0 becomes leasable
+    // again. Poll to allow the detached release task to land.
     drop(a);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        match PgMachineIdLease::acquire_with(options.clone(), config()).await {
-            Ok(c) if c.machine_id().get() == 0 => break,
-            Ok(_) | Err(_) => {
-                assert!(Instant::now() < deadline, "machine ID 0 never released");
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
+        let c = PgMachineIdLease::builder(pool.clone())
+            .table_name(table)
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        if c.machine_id().get() == 0 {
+            break;
         }
+        drop(c);
+        assert!(Instant::now() < deadline, "machine ID 0 never released");
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
 #[tokio::test]
-async fn range_exhaustion_errors() {
-    let Some(options) = pg_options() else { return };
-    let config = || {
-        PgLeaseConfig::new()
-            .namespace(-0x1000_0000_0002)
-            .machine_ids(7..=8)
-    };
+async fn all_ids_held_errors() {
+    let Some(pool) = pool().await else { return };
+    let table = "snowdrop_test_lease_exhausted";
+    reset(&pool, table).await;
 
-    let _a = PgMachineIdLease::acquire_with(options.clone(), config())
+    // Create the table via the published DDL, then mark every row held far
+    // into the future without acquiring any lease.
+    let ddl = PgMachineIdLease::schema_sql(table).unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(ddl))
+        .execute(&pool)
         .await
         .unwrap();
-    let _b = PgMachineIdLease::acquire_with(options.clone(), config())
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE {table} SET claimed_at = NOW(), reclaimable_after = NOW() + INTERVAL '1 hour'"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    match PgMachineIdLease::builder(pool.clone())
+        .table_name(table)
+        .unwrap()
+        .auto_create_table(false)
+        .build()
         .await
-        .unwrap();
-    match PgMachineIdLease::acquire_with(options, config()).await {
+    {
         Err(PgLeaseError::NoMachineIdAvailable) => {}
         other => panic!("expected NoMachineIdAvailable, got {other:?}"),
     }
@@ -91,80 +105,68 @@ async fn range_exhaustion_errors() {
 
 #[tokio::test]
 async fn generator_stamps_leased_machine_id() {
-    let Some(options) = pg_options() else { return };
-    let config = PgLeaseConfig::new()
-        .namespace(-0x1000_0000_0003)
-        .machine_ids(3..=3);
+    let Some(pool) = pool().await else { return };
+    let table = "snowdrop_test_lease_generate";
+    reset(&pool, table).await;
 
-    let generator = PgIdGenerator::acquire_with(options, config, Epoch::DEFAULT)
+    let generator = PgIdGenerator::builder(pool)
+        .table_name(table)
+        .unwrap()
+        .build()
         .await
         .unwrap();
-    assert_eq!(generator.machine_id().get(), 3);
+    let machine_id = generator.machine_id().get();
+    assert!(!generator.is_poisoned());
 
     let a = generator.generate().unwrap();
     let b = generator.generate_async().await.unwrap();
-    assert!(b > a);
-    assert_eq!(a.machine_id().get(), 3);
-    assert_eq!(b.machine_id().get(), 3);
+    assert!(b > a, "IDs from one generator must be strictly increasing");
+    assert_eq!(a.machine_id().get(), machine_id);
+    assert_eq!(b.machine_id().get(), machine_id);
 }
 
-/// Kills the lease's backend session and verifies the keepalive task
-/// re-acquires the same machine ID on a fresh session.
+/// A row whose fencing token was rotated out from under a live lease (as a
+/// steal would do) must be detected on the next heartbeat, poisoning the lease
+/// and driving a re-claim onto a fresh machine ID.
 #[tokio::test]
-async fn reacquires_after_backend_termination() {
-    let Some(options) = pg_options() else { return };
-    let namespace: i64 = -0x1000_0000_0004;
-    let config = PgLeaseConfig::new()
-        .namespace(namespace)
-        .machine_ids(0..=1)
-        .keepalive_interval(Duration::from_millis(100))
-        .policy(LeaseLossPolicy::Poison);
+async fn detects_stolen_lease_and_reacquires() {
+    let Some(pool) = pool().await else { return };
+    let table = "snowdrop_test_lease_stolen";
+    reset(&pool, table).await;
 
-    let generator = PgIdGenerator::acquire_with(options.clone(), config, Epoch::DEFAULT)
+    let lease = PgMachineIdLease::builder(pool.clone())
+        .table_name(table)
+        .unwrap()
+        .build()
         .await
         .unwrap();
-    assert_eq!(generator.machine_id().get(), 0);
-    generator.generate().unwrap();
+    assert_eq!(lease.machine_id().get(), 0);
 
-    // Kill the lease's backend from a second connection.
-    let key = namespace; // machine ID 0 => key == namespace
-    let mut admin = PgConnection::connect_with(&options).await.unwrap();
-    let old_pid = lock_holder(&mut admin, key)
-        .await
-        .expect("lease backend should hold the advisory lock");
-    sqlx::query("SELECT pg_terminate_backend($1)")
-        .bind(old_pid)
-        .execute(&mut admin)
-        .await
-        .unwrap();
+    // Simulate a steal: rotate machine ID 0's claimed_at so the lease's stored
+    // fencing token no longer matches, and occupy nothing else so re-claim can
+    // only land on ID 0 again once we free it — instead leave 0 "held" by the
+    // rotation and let re-claim pick the next free ID (1).
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE {table} SET claimed_at = NOW() + INTERVAL '1 second', \
+         reclaimable_after = NOW() + INTERVAL '1 hour' WHERE machine_id = 0"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
 
-    // The keepalive task must re-acquire the same key on a new session.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // The background task heartbeats ~20s after claim; wait for it to notice
+    // the fencing mismatch and re-acquire a different ID.
+    let deadline = Instant::now() + Duration::from_secs(40);
     loop {
-        match lock_holder(&mut admin, key).await {
-            Some(pid) if pid != old_pid => break,
-            _ => {
-                assert!(
-                    Instant::now() < deadline,
-                    "lock was not re-acquired in time"
-                );
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+        if lease.machine_id().get() == 1 && !lease.is_poisoned() {
+            break;
         }
+        assert!(
+            Instant::now() < deadline,
+            "lease did not detect the steal and re-acquire (machine_id={}, poisoned={})",
+            lease.machine_id().get(),
+            lease.is_poisoned(),
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
-
-    // Same machine ID, and generation recovers (the poisoned flag may lag
-    // the server-side lock by one scheduler tick).
-    assert_eq!(generator.machine_id().get(), 0);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let id = loop {
-        match generator.generate() {
-            Ok(id) => break id,
-            Err(e) => {
-                assert!(Instant::now() < deadline, "generate did not recover: {e}");
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-    };
-    assert_eq!(id.machine_id().get(), 0);
 }

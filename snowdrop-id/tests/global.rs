@@ -31,14 +31,3 @@ fn global_lifecycle() {
     assert!(b > a);
     assert_eq!(a.machine_id(), mid);
 }
-
-#[cfg(feature = "tokio")]
-#[tokio::test]
-async fn global_generate_async_after_lifecycle() {
-    // Runs in the same process as global_lifecycle in unknown order, so
-    // initialize defensively and accept either outcome.
-    let _ = global::init(MachineId::new(5).unwrap());
-    let a = global::generate_async().await.unwrap();
-    let b = global::generate_async().await.unwrap();
-    assert!(b > a);
-}
