@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "snowdrop-id"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -905,14 +905,14 @@ dependencies = [
 
 [[package]]
 name = "snowdrop-id-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "snowdrop-id",
 ]
 
 [[package]]
 name = "snowdrop-id-postgres"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "const_format",
  "snowdrop-id",

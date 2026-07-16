@@ -15,4 +15,4 @@ name = "snowdrop"
 path = "src/main.rs"
 
 [dependencies]
-snowdrop-id = { version = "0.2.1", path = "../snowdrop-id" }
+snowdrop-id = { version = "0.3.0", path = "../snowdrop-id" }
