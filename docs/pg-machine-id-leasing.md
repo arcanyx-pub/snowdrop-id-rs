@@ -70,16 +70,20 @@ safe.
 ## 3. The lease table
 
 ```sql
-CREATE TABLE snowdrop.machine_id_leases (   -- name is configurable
-    machine_id        SMALLINT PRIMARY KEY, -- 0..=1023, prepopulated
-    claimed_at        TIMESTAMPTZ,          -- identity / fencing source
-    reclaimable_after TIMESTAMPTZ           -- liveness: steal me once NOW() passes this
+CREATE TABLE "public"."snowdrop_machine_id_leases" (  -- schema is configurable
+    machine_id        SMALLINT PRIMARY KEY,            -- 0..=1023, prepopulated
+    claimed_at        TIMESTAMPTZ,                     -- identity / fencing source
+    reclaimable_after TIMESTAMPTZ                      -- liveness: steal once NOW() passes this
 ) WITH (fillfactor = 70);
 ```
 
-By default the table lives in a dedicated **`snowdrop`** schema
-(`snowdrop.machine_id_leases`), keeping it out of `public`; the
-fully-qualified name is configurable.
+The table name is **fixed** and `snowdrop_`-prefixed, so it is collision-safe in
+a shared schema. It lives in the connection's **`public`** schema by default —
+so a lease needs only create-table rights, not `CREATE`-on-database for a
+dedicated schema. The **schema** (not the table name) is configurable via
+`schema_name(..)`, quoted so reserved words work; a non-`public` schema gives an
+isolated ID space and can hold future tables without new config. All identifiers
+are emitted quoted (`"schema"."snowdrop_machine_id_leases"`).
 
 Three columns, two responsibilities cleanly split:
 
@@ -144,51 +148,58 @@ second'`), so the only values crossing the Rust boundary are `i16`
 (machine_id) and `i64` (fencing token, seconds counts). No `sqlx/time`, no
 interval type, no extra `sqlx` feature.
 
-### 4.1 Bootstrap (opt-in auto-create)
+### 4.1 Provisioning (opt-in)
 
-Run at construction only when opted in via `auto_create(true)` (default: off,
-§9). It creates the schema (when the table is schema-qualified) and the table.
-Race-safe against concurrent creators: each `CREATE` runs in its own
-`BEGIN … EXCEPTION` sub-block that swallows both the already-committed error
-(`duplicate_schema` / `duplicate_table`) and the `unique_violation` a *simultaneous*
-creator hits on the `pg_namespace` / `pg_class` unique index, so the loser
-continues and the winner's `CREATE TABLE` + `INSERT` commit atomically (no
-partial population). A first-boot fan-out of N instances is safe.
+The builder creates nothing by default — creating a table needs DDL rights, and
+a non-`public` schema needs `CREATE` on the database, which many roles lack.
+Provisioning is opt-in and split by concern, so it serves migration and
+declarative (Atlas/Skeema) workflows that manage schema and seed data
+separately:
+
+- **`auto_provision(true)`** — creates the schema (only when non-`public`), the
+  table, and the 1024 seed rows on boot. This is the *concurrent* path (N
+  instances at once), so its DDL is race-safe: each `CREATE` runs in its own
+  `BEGIN … EXCEPTION` sub-block that swallows both the already-committed error
+  (`duplicate_schema` / `duplicate_table`) and the `unique_violation` a
+  simultaneous creator hits on the `pg_namespace` / `pg_class` unique index, so a
+  first-boot fan-out of N instances all succeed.
+- **`schema_sql()`** — idempotent DDL (`CREATE SCHEMA IF NOT EXISTS` when
+  non-`public`, `CREATE TABLE IF NOT EXISTS`) for a *one-time* migration. Not
+  race-safe — it is meant to run once, which keeps it simple; an additive column
+  change in a future version appends `ALTER TABLE … ADD COLUMN IF NOT EXISTS`
+  (destructive changes still need real migrations).
+- **`seeding_sql()`** — idempotent `INSERT … generate_series(0,1023) ON CONFLICT
+  (machine_id) DO NOTHING`. Run after `schema_sql()`; safe to re-run and safe
+  under concurrency.
+
+All three build the table from one shared column definition, so the shape can't
+drift between the race-safe and migration forms. The schema name **cannot be a
+bound parameter**, so it is validated (single `[A-Za-z0-9_]` identifier, ≤63
+bytes) and emitted **quoted** — which both blocks injection and lets reserved
+words work.
+
+The race-safe `auto_provision` DDL, then the separate seed:
 
 ```sql
 DO $$
 BEGIN
     BEGIN
-        CREATE SCHEMA snowdrop;                -- only when schema-qualified
+        CREATE SCHEMA "app";                   -- only when non-public
     EXCEPTION WHEN duplicate_schema OR unique_violation THEN NULL;
     END;
     BEGIN
-        CREATE TABLE snowdrop.machine_id_leases (
+        CREATE TABLE "app"."snowdrop_machine_id_leases" (
             machine_id        SMALLINT PRIMARY KEY,
             claimed_at        TIMESTAMPTZ,
             reclaimable_after TIMESTAMPTZ
         ) WITH (fillfactor = 70);
-        INSERT INTO snowdrop.machine_id_leases (machine_id)
-        SELECT generate_series(0, 1023);
     EXCEPTION WHEN duplicate_table OR unique_violation THEN NULL;
     END;
 END $$;
+
+INSERT INTO "app"."snowdrop_machine_id_leases" (machine_id)
+SELECT generate_series(0, 1023) ON CONFLICT (machine_id) DO NOTHING;
 ```
-
-Notes:
-
-- **Auto-DDL is opt-in.** Creating the schema needs `CREATE` on the database and
-  creating the table needs DDL rights — privileges many production roles lack —
-  so auto-create defaults to **off**. Provision from
-  `PgMachineIdLease::schema_sql()` (schema + table; `schema_sql_with_table(name)`
-  for a custom name) in the caller's own migrations, or opt in with
-  `auto_create(true)` where the connecting role may run DDL.
-- **The table name is configurable** (this is also how independent ID spaces
-  share one database: a different table is a different space). Because a table
-  name **cannot be a bound parameter**, it is interpolated as an identifier and
-  therefore **validated** in Rust against an allowlist (`[A-Za-z0-9_]`, bounded
-  length, optional `schema.` qualifier). An unvalidated table name would be a
-  SQL-injection vector.
 
 ### 4.2 Claim
 
@@ -198,37 +209,52 @@ spurious serialization failures. The isolation level is set **per transaction**
 (`BEGIN ISOLATION LEVEL READ COMMITTED`), never `SET SESSION` — session-scoped
 state is exactly what breaks under transaction pooling.
 
+A CTE picks the lowest free row and claims it; the outer `SELECT` also reports
+whether the table has any seed rows, so a caller can tell "nothing claimed
+because the table is empty" from "…because every ID is leased" — in one
+statement, always returning exactly one row.
+
 ```sql
 BEGIN ISOLATION LEVEL READ COMMITTED;
 
-UPDATE snowdrop.machine_id_leases
-SET claimed_at        = NOW(),
-    reclaimable_after = NOW() + $1 * INTERVAL '1 second'   -- $1 = bootloop grace (~60s)
-WHERE machine_id = (
+WITH candidate AS (
     SELECT machine_id
-    FROM snowdrop.machine_id_leases
-    WHERE reclaimable_after IS NULL OR reclaimable_after <= NOW()
-    ORDER BY machine_id ASC          -- lowest free ID → shortest base62 strings
+    FROM "public"."snowdrop_machine_id_leases"
+    WHERE machine_id BETWEEN 0 AND 1023
+      AND (reclaimable_after IS NULL OR reclaimable_after <= NOW())
+    ORDER BY machine_id ASC           -- lowest free ID → shortest base62 strings
     LIMIT 1
-    FOR UPDATE SKIP LOCKED           -- concurrent claimers never pick the same row
+    FOR UPDATE SKIP LOCKED            -- concurrent claimers never pick the same row
+),
+claimed AS (
+    UPDATE "public"."snowdrop_machine_id_leases"
+    SET claimed_at        = NOW(),
+        reclaimable_after = NOW() + $1 * INTERVAL '1 second'   -- $1 = bootloop grace (~60s)
+    WHERE machine_id = (SELECT machine_id FROM candidate)
+    RETURNING machine_id,
+              to_char(claimed_at AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSMS')::bigint AS fencing_token
 )
-RETURNING
-    machine_id,
-    to_char(claimed_at AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSMS')::bigint AS fencing_token;
+SELECT (SELECT machine_id FROM claimed)    AS machine_id,     -- NULL if nothing claimed
+       (SELECT fencing_token FROM claimed) AS fencing_token,
+       EXISTS (SELECT 1 FROM "public"."snowdrop_machine_id_leases"
+               WHERE machine_id BETWEEN 0 AND 1023) AS seeded;
 
 COMMIT;
 ```
 
 - **`FOR UPDATE SKIP LOCKED`** is the work-queue idiom: two workers booting
-  together lock disjoint rows and never collide; no deadlocks.
+  together lock disjoint rows and never collide; no deadlocks. The pick-in-a-CTE-
+  then-update shape behaves identically to a scalar subquery.
 - **`ORDER BY machine_id ASC`** is required, not incidental: without it
   `LIMIT 1` returns an arbitrary eligible row (heap order, which drifts after
   updates and vacuum). The spec makes "low machine IDs → shorter base62
   strings" a real property, so we hand out the lowest free ID deterministically.
-- **A short initial `reclaimable_after`** (bootloop grace) is what reclaims
-  crash-on-boot IDs quickly; the first heartbeat pushes it out to the full TTL.
-- **Zero rows returned** ⇒ every ID in the range is currently held ⇒
-  `PgLeaseError::NoMachineIdAvailable`.
+- **`machine_id BETWEEN 0 AND 1023`** guards against out-of-range rows a
+  caller-managed table might hold, so a claimed ID always fits `MachineId`.
+- **The result row** maps to three outcomes: `machine_id` non-NULL → claimed;
+  else `seeded = false` → `PgLeaseError::TableNotSeeded`; else → every ID held →
+  `PgLeaseError::NoMachineIdAvailable`. (A missing table is a separate
+  relation-does-not-exist database error.)
 
 ### 4.3 Heartbeat
 
@@ -236,7 +262,7 @@ Pushes the deadline out to the full TTL, **fenced** on `claimed_at` so a zombie
 whose lease was already stolen cannot resurrect it.
 
 ```sql
-UPDATE snowdrop.machine_id_leases
+UPDATE "public"."snowdrop_machine_id_leases"
 SET reclaimable_after = NOW() + $1 * INTERVAL '1 second'   -- $1 = reclaim TTL (~1800s)
 WHERE machine_id = $2
   AND to_char(claimed_at AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSMS')::bigint = $3;
@@ -256,7 +282,7 @@ not land, the deadline reclaims the ID anyway — release is purely a latency
 optimization for ID reuse, never a correctness requirement.
 
 ```sql
-UPDATE snowdrop.machine_id_leases
+UPDATE "public"."snowdrop_machine_id_leases"
 SET reclaimable_after = NULL,
     claimed_at        = NULL          -- back to pristine → immediately claimable
 WHERE machine_id = $1
@@ -430,21 +456,27 @@ ID (§3.1).
   is precisely "generate past lease expiry" — the collision footgun. There is
   now one behavior: always self-poison at the derived threshold.
 - **The dedicated `PgConnection`.** Replaced by the caller's `PgPool` (§2).
-- **`machine_ids(range)` partitioning and the advisory-lock `namespace`.**
-  Independent ID spaces are expressed by using a different **table name**; a
-  single knob replaces both.
+- **`machine_ids(range)` partitioning, the advisory-lock `namespace`, and
+  configurable table names.** Independent ID spaces are expressed by a different
+  **schema** (`schema_name`); a single knob replaces all of these, and keeping
+  the table name fixed lets future versions add tables to the schema without
+  breaking configuration.
 
 ---
 
 ## 9. API sketch
 
 ```rust
-use snowdrop_id_postgres::PgIdGenerator;
+use snowdrop_id_postgres::{PgIdGenerator, PgMachineIdLease};
 use snowdrop_id::Epoch;
 
+// Provision once (migration) — or skip and use .auto_provision(true) below.
+sqlx::raw_sql(sqlx::AssertSqlSafe(PgMachineIdLease::schema_sql())).execute(&pool).await?;
+sqlx::raw_sql(sqlx::AssertSqlSafe(PgMachineIdLease::seeding_sql())).execute(&pool).await?;
+
 let generator = PgIdGenerator::builder(pool)          // caller-provided PgPool
-    .table_name("snowdrop.machine_id_leases")?        // validated identifier
-    .auto_create(true)                                // opt-in; default is off
+    .schema_name("public")?                           // default; quoted, isolated ID space
+    .auto_provision(false)                            // default: nothing is created
     .epoch(Epoch::DEFAULT)
     .build()                                           // claims an ID, spawns heartbeat task
     .await?;
@@ -455,8 +487,9 @@ generator.is_poisoned();             // observability
 // Drop → best-effort fenced release
 ```
 
-`PgGenerateError`: `EpochExhausted` (permanent) | `MachineIdLeaseLost` (poisoned;
-retry after re-claim).
+`PgLeaseError`: `Database` | `NoMachineIdAvailable` | `TableNotSeeded` |
+`InvalidSchemaName`. `PgGenerateError`: `EpochExhausted` (permanent) |
+`MachineIdLeaseLost` (poisoned; retry after re-claim).
 
 ---
 

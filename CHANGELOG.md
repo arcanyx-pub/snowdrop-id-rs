@@ -15,14 +15,19 @@ Notable changes to the `snowdrop-id`, `snowdrop-id-cli`, and
   move from `snowdrop_id::` to `snowdrop_id_postgres::`, and the leasing no
   longer drags the sqlx tokio runtime into the core crate. The thin `sqlx-*`
   `Id`↔`BIGINT` column mappings stay in `snowdrop-id`.
-- The default lease table moved from `public.snowdrop_machine_id_leases` to
-  **`snowdrop.machine_id_leases`**, in a dedicated `snowdrop` schema. Existing
-  deployments must rename or recreate the table.
-- Schema/table auto-creation is now **opt-in**. The builder no longer creates
-  them by default (creating a schema needs DDL privileges many roles lack);
-  provision from `PgMachineIdLease::schema_sql()` in a migration, or call
-  `.auto_create(true)`. The builder method `auto_create_table` is renamed
-  `auto_create` and now creates the schema as well as the table.
+- The lease table is now **`snowdrop_machine_id_leases`** (prefixed, so it is
+  collision-safe in a shared schema), in the connection's **`public`** schema by
+  default. The **schema** — not the table name — is configurable via
+  `schema_name(..)` (quoted, so reserved words work); a non-`public` schema
+  creates an isolated ID space.
+- **Provisioning is opt-in and split by concern.** The builder no longer creates
+  anything by default. `auto_provision(true)` (renamed from `auto_create`)
+  creates the schema (only when non-`public`), table, and 1024 seed rows,
+  race-safely across a concurrent first boot. For migrations, run
+  `PgMachineIdLease::schema_sql()` (idempotent DDL) then `seeding_sql()`
+  (idempotent seed) — or the `*_with_schema(..)` variants for a custom schema.
+  A table that exists but is unseeded now fails with the distinct
+  `PgLeaseError::TableNotSeeded`.
 
 ## [0.2.1] - 2026-07-14
 

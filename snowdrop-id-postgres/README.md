@@ -23,21 +23,35 @@ use sqlx::PgPool;
 
 let pool = PgPool::connect("postgres://…").await?;
 
-// The lease table (`snowdrop.machine_id_leases` by default) must exist first.
-// Run this in your migrations…
-sqlx::raw_sql(&PgMachineIdLease::schema_sql())
-    .execute(&pool)
-    .await?;
-// …or opt into automatic creation with `.builder(pool).auto_create(true)`.
+// The lease table (`public.snowdrop_machine_id_leases` by default) must exist
+// first. Provision it in your migrations…
+sqlx::raw_sql(sqlx::AssertSqlSafe(PgMachineIdLease::schema_sql()))
+    .execute(&pool).await?;                                  // idempotent DDL
+sqlx::raw_sql(sqlx::AssertSqlSafe(PgMachineIdLease::seeding_sql()))
+    .execute(&pool).await?;                                  // idempotent seed
+// …or opt into automatic creation with `.builder(pool).auto_provision(true)`.
 
 let generator = PgIdGenerator::acquire(pool).await?; // claims the lowest free ID
 let id = generator.generate()?;
 ```
 
-Creating the schema and table is **not** automatic by default: it needs DDL
-privileges that many production roles lack. See
+## Provisioning
+
+Creating the table is **not** automatic by default — it needs DDL rights (and,
+for a custom schema, `CREATE` on the database) that many production roles lack:
+
+- **Out-of-the-box:** `auto_provision(true)` creates the schema, table, and seed
+  rows on boot, race-safely across many instances starting at once.
+- **Migrations:** run `schema_sql()` (DDL) then `seeding_sql()` (seed) once; both
+  are idempotent.
+- **Declarative (Atlas/Skeema):** feed `schema_sql()`'s output to your tool as
+  the desired schema, and run `seeding_sql()` as a deploy step (those tools don't
+  manage row data).
+
+The lease lives in `public` by default; `schema_name("…")` puts it in a
+dedicated (quoted) schema for an isolated ID space. See
 [`docs/pg-machine-id-leasing.md`](https://github.com/arcanyx-pub/snowdrop-id-rs/blob/main/docs/pg-machine-id-leasing.md)
-in the repository for the full design.
+for the full design.
 
 ## License
 
