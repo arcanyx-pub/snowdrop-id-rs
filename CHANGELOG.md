@@ -20,7 +20,7 @@ Notable changes to the `snowdrop-id`, `snowdrop-id-cli`, and
   deployments must rename or recreate the table.
 - Schema/table auto-creation is now **opt-in**. The builder no longer creates
   them by default (creating a schema needs DDL privileges many roles lack);
-  provision from `PgMachineIdLease::schema_sql(..)` in a migration, or call
+  provision from `PgMachineIdLease::schema_sql()` in a migration, or call
   `.auto_create(true)`. The builder method `auto_create_table` is renamed
   `auto_create` and now creates the schema as well as the table.
 

@@ -154,6 +154,48 @@ async fn auto_create_provisions_a_schema_qualified_table() {
     assert_eq!(rows, 1024);
 }
 
+/// Concurrent `auto_create(true)` from a cold start (no schema, no table) must
+/// be race-safe: one creator wins, the rest tolerate the race, and every lease
+/// still gets a distinct machine ID.
+#[tokio::test]
+async fn concurrent_auto_create_is_race_safe() {
+    let Some(pool) = pool().await else { return };
+    // Cold start: drop the whole schema so the very first CREATE SCHEMA races.
+    sqlx::query("DROP SCHEMA IF EXISTS snowdrop_test_race CASCADE")
+        .execute(&pool)
+        .await
+        .expect("drop schema failed");
+
+    let mut handles = Vec::new();
+    for _ in 0..12 {
+        let pool = pool.clone();
+        handles.push(tokio::spawn(async move {
+            PgMachineIdLease::builder(pool)
+                .table_name("snowdrop_test_race.machine_id_leases")
+                .unwrap()
+                .auto_create(true)
+                .build()
+                .await
+        }));
+    }
+
+    let mut leases = Vec::new();
+    for h in handles {
+        leases.push(
+            h.await
+                .unwrap()
+                .expect("concurrent auto-create should not race-fail"),
+        );
+    }
+    // Hold every lease alive while checking, so no ID is released and reused.
+    let ids: std::collections::HashSet<u16> = leases.iter().map(|l| l.machine_id().get()).collect();
+    assert_eq!(
+        ids.len(),
+        12,
+        "concurrent leases must get distinct machine IDs"
+    );
+}
+
 #[tokio::test]
 async fn generator_stamps_leased_machine_id() {
     let Some(pool) = pool().await else { return };

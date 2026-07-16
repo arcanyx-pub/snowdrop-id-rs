@@ -149,16 +149,18 @@ interval type, no extra `sqlx` feature.
 Run at construction only when opted in via `auto_create(true)` (default: off,
 §9). It creates the schema (when the table is schema-qualified) and the table.
 Race-safe against concurrent creators: each `CREATE` runs in its own
-`BEGIN … EXCEPTION` sub-block, so a creator that loses the race swallows the
-`duplicate_schema` / `duplicate_table` and the `CREATE TABLE` + `INSERT` still
-commit atomically (no partial population).
+`BEGIN … EXCEPTION` sub-block that swallows both the already-committed error
+(`duplicate_schema` / `duplicate_table`) and the `unique_violation` a *simultaneous*
+creator hits on the `pg_namespace` / `pg_class` unique index, so the loser
+continues and the winner's `CREATE TABLE` + `INSERT` commit atomically (no
+partial population). A first-boot fan-out of N instances is safe.
 
 ```sql
 DO $$
 BEGIN
     BEGIN
         CREATE SCHEMA snowdrop;                -- only when schema-qualified
-    EXCEPTION WHEN duplicate_schema THEN NULL;
+    EXCEPTION WHEN duplicate_schema OR unique_violation THEN NULL;
     END;
     BEGIN
         CREATE TABLE snowdrop.machine_id_leases (
@@ -168,7 +170,7 @@ BEGIN
         ) WITH (fillfactor = 70);
         INSERT INTO snowdrop.machine_id_leases (machine_id)
         SELECT generate_series(0, 1023);
-    EXCEPTION WHEN duplicate_table THEN NULL;
+    EXCEPTION WHEN duplicate_table OR unique_violation THEN NULL;
     END;
 END $$;
 ```
