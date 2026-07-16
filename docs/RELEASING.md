@@ -22,12 +22,22 @@ so there is no long-lived `CARGO_REGISTRY_TOKEN` secret to leak or rotate.
    $ just publish
    ```
    `just publish` pushes the `vX.Y.Z` tag, which triggers
-   [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): it
+   [`.github/workflows/publish.yml`](../.github/workflows/publish.yml). The run
+   **pauses on the `crates-io` environment for an approver**; once approved it
    verifies packaging, mints an OIDC token via
    [`rust-lang/crates-io-auth-action`](https://github.com/rust-lang/crates-io-auth-action),
    and runs `cargo publish --workspace` (crates publish in dependency order).
 
-## One-time setup (per crate)
+## One-time setup
+
+### 1. GitHub environment (approval gate)
+
+In GitHub → repo **Settings → Environments → New environment**, create
+`crates-io` and add the release approver(s) under **Required reviewers**. The
+publish job runs in this environment, so every release **pauses for a human to
+approve** before any crate is published.
+
+### 2. crates.io Trusted Publishers (per crate)
 
 Trusted Publishing is configured **per crate** on crates.io, and a crate must
 already exist to configure it. For each of the three crates, in
@@ -36,7 +46,7 @@ publisher:
 
 - **Repository owner / name:** `arcanyx-pub` / `snowdrop-id-rs`
 - **Workflow filename:** `publish.yml`
-- **Environment:** leave blank (the workflow uses none)
+- **Environment:** `crates-io` (must match the workflow's `environment:`)
 
 ### Bootstrapping a brand-new crate
 
