@@ -173,13 +173,17 @@ fn split_schema(table: &str) -> (Option<&str>, &str) {
 
 fn bootstrap_sql(table: &str) -> String {
     // When the table is schema-qualified, create the schema first. Each step is
-    // its own `BEGIN … EXCEPTION` sub-block so a concurrent creator losing the
-    // race (Postgres can raise duplicate_schema/duplicate_table even under
-    // `IF NOT EXISTS`) is swallowed without aborting the rest of the block.
+    // its own `BEGIN … EXCEPTION` sub-block that swallows both the already-exists
+    // error (`duplicate_schema` / `duplicate_table`, from a committed prior
+    // creation) and `unique_violation` (raised on the `pg_namespace` /
+    // `pg_class` unique index when a *concurrent* creator wins the race), so
+    // first-boot fan-out and parallel migration runners are safe without
+    // aborting the rest of the block.
     let schema_block = match split_schema(table).0 {
         Some(schema) => {
             format!(
-                "BEGIN CREATE SCHEMA {schema}; EXCEPTION WHEN duplicate_schema THEN NULL; END; "
+                "BEGIN CREATE SCHEMA {schema}; \
+                 EXCEPTION WHEN duplicate_schema OR unique_violation THEN NULL; END; "
             )
         }
         None => String::new(),
@@ -196,7 +200,7 @@ fn bootstrap_sql(table: &str) -> String {
                  ) WITH (fillfactor = 70); \
                  INSERT INTO {table} (machine_id) SELECT generate_series(0, 1023); \
              EXCEPTION \
-                 WHEN duplicate_table THEN NULL; \
+                 WHEN duplicate_table OR unique_violation THEN NULL; \
              END; \
          END $$;"
     )
@@ -342,8 +346,9 @@ pub struct PgMachineIdLease {
 }
 
 impl PgMachineIdLease {
-    /// Acquires a lease from `pool` with defaults (table [`DEFAULT_TABLE`],
-    /// auto-creating it if absent).
+    /// Acquires a lease from `pool` with defaults: the [`DEFAULT_TABLE`], which
+    /// must already exist (auto-creation is off by default — see
+    /// [`auto_create`](PgMachineIdLeaseBuilder::auto_create)).
     pub async fn acquire(pool: PgPool) -> Result<PgMachineIdLease, PgLeaseError> {
         PgMachineIdLease::builder(pool).build().await
     }
@@ -777,7 +782,10 @@ mod tests {
     fn bootstrap_creates_schema_only_when_qualified() {
         let qualified = bootstrap_sql("snowdrop.machine_id_leases");
         assert!(qualified.contains("CREATE SCHEMA snowdrop"));
-        assert!(qualified.contains("WHEN duplicate_schema THEN NULL"));
+        // Both handlers must tolerate the concurrent-creation race, not just the
+        // already-committed case.
+        assert!(qualified.contains("WHEN duplicate_schema OR unique_violation THEN NULL"));
+        assert!(qualified.contains("WHEN duplicate_table OR unique_violation THEN NULL"));
         assert!(qualified.contains("CREATE TABLE snowdrop.machine_id_leases"));
 
         let plain = bootstrap_sql("leases");
