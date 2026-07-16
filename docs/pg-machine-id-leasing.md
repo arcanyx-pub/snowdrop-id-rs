@@ -70,12 +70,16 @@ safe.
 ## 3. The lease table
 
 ```sql
-CREATE TABLE snowdrop_machine_id_leases (   -- name is configurable
+CREATE TABLE snowdrop.machine_id_leases (   -- name is configurable
     machine_id        SMALLINT PRIMARY KEY, -- 0..=1023, prepopulated
     claimed_at        TIMESTAMPTZ,          -- identity / fencing source
     reclaimable_after TIMESTAMPTZ           -- liveness: steal me once NOW() passes this
 ) WITH (fillfactor = 70);
 ```
+
+By default the table lives in a dedicated **`snowdrop`** schema
+(`snowdrop.machine_id_leases`), keeping it out of `public`; the
+fully-qualified name is configurable.
 
 Three columns, two responsibilities cleanly split:
 
@@ -140,36 +144,43 @@ second'`), so the only values crossing the Rust boundary are `i16`
 (machine_id) and `i64` (fencing token, seconds counts). No `sqlx/time`, no
 interval type, no extra `sqlx` feature.
 
-### 4.1 Bootstrap (optional auto-create)
+### 4.1 Bootstrap (opt-in auto-create)
 
-Run once at construction unless `auto_create_table(false)`. Race-safe against
-concurrent creators: the whole `DO` block is one transaction, DDL takes an
-exclusive lock so a second creator blocks then hits `duplicate_table`, and the
-`CREATE` + `INSERT` commit atomically (no partial population).
+Run at construction only when opted in via `auto_create(true)` (default: off,
+§9). It creates the schema (when the table is schema-qualified) and the table.
+Race-safe against concurrent creators: each `CREATE` runs in its own
+`BEGIN … EXCEPTION` sub-block, so a creator that loses the race swallows the
+`duplicate_schema` / `duplicate_table` and the `CREATE TABLE` + `INSERT` still
+commit atomically (no partial population).
 
 ```sql
 DO $$
 BEGIN
-    CREATE TABLE snowdrop_machine_id_leases (
-        machine_id        SMALLINT PRIMARY KEY,
-        claimed_at        TIMESTAMPTZ,
-        reclaimable_after TIMESTAMPTZ
-    ) WITH (fillfactor = 70);
-
-    INSERT INTO snowdrop_machine_id_leases (machine_id)
-    SELECT generate_series(0, 1023);
-EXCEPTION
-    WHEN duplicate_table THEN NULL;
+    BEGIN
+        CREATE SCHEMA snowdrop;                -- only when schema-qualified
+    EXCEPTION WHEN duplicate_schema THEN NULL;
+    END;
+    BEGIN
+        CREATE TABLE snowdrop.machine_id_leases (
+            machine_id        SMALLINT PRIMARY KEY,
+            claimed_at        TIMESTAMPTZ,
+            reclaimable_after TIMESTAMPTZ
+        ) WITH (fillfactor = 70);
+        INSERT INTO snowdrop.machine_id_leases (machine_id)
+        SELECT generate_series(0, 1023);
+    EXCEPTION WHEN duplicate_table THEN NULL;
+    END;
 END $$;
 ```
 
 Notes:
 
-- **Auto-DDL is opt-out.** Many production roles cannot (or are not allowed to)
-  run DDL. We default to auto-create for the batteries-included path, expose
-  `auto_create_table(false)` for locked-down deployments, and expose the schema
-  as `PgMachineIdLease::schema_sql(table_name)` so it can go in the caller's own
-  migrations.
+- **Auto-DDL is opt-in.** Creating the schema needs `CREATE` on the database and
+  creating the table needs DDL rights — privileges many production roles lack —
+  so auto-create defaults to **off**. Provision from
+  `PgMachineIdLease::schema_sql(table_name)` (schema + table) in the caller's own
+  migrations, or opt in with `auto_create(true)` where the connecting role may
+  run DDL.
 - **The table name is configurable** (this is also how independent ID spaces
   share one database: a different table is a different space). Because a table
   name **cannot be a bound parameter**, it is interpolated as an identifier and
@@ -188,12 +199,12 @@ state is exactly what breaks under transaction pooling.
 ```sql
 BEGIN ISOLATION LEVEL READ COMMITTED;
 
-UPDATE snowdrop_machine_id_leases
+UPDATE snowdrop.machine_id_leases
 SET claimed_at        = NOW(),
     reclaimable_after = NOW() + $1 * INTERVAL '1 second'   -- $1 = bootloop grace (~60s)
 WHERE machine_id = (
     SELECT machine_id
-    FROM snowdrop_machine_id_leases
+    FROM snowdrop.machine_id_leases
     WHERE reclaimable_after IS NULL OR reclaimable_after <= NOW()
     ORDER BY machine_id ASC          -- lowest free ID → shortest base62 strings
     LIMIT 1
@@ -223,7 +234,7 @@ Pushes the deadline out to the full TTL, **fenced** on `claimed_at` so a zombie
 whose lease was already stolen cannot resurrect it.
 
 ```sql
-UPDATE snowdrop_machine_id_leases
+UPDATE snowdrop.machine_id_leases
 SET reclaimable_after = NOW() + $1 * INTERVAL '1 second'   -- $1 = reclaim TTL (~1800s)
 WHERE machine_id = $2
   AND to_char(claimed_at AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSMS')::bigint = $3;
@@ -243,7 +254,7 @@ not land, the deadline reclaims the ID anyway — release is purely a latency
 optimization for ID reuse, never a correctness requirement.
 
 ```sql
-UPDATE snowdrop_machine_id_leases
+UPDATE snowdrop.machine_id_leases
 SET reclaimable_after = NULL,
     claimed_at        = NULL          -- back to pristine → immediately claimable
 WHERE machine_id = $1
@@ -426,11 +437,12 @@ ID (§3.1).
 ## 9. API sketch
 
 ```rust
-use snowdrop_id::{PgIdGenerator, Epoch};
+use snowdrop_id_postgres::PgIdGenerator;
+use snowdrop_id::Epoch;
 
 let generator = PgIdGenerator::builder(pool)          // caller-provided PgPool
-    .table_name("snowdrop_machine_id_leases")?        // validated identifier
-    .auto_create_table(true)                          // default
+    .table_name("snowdrop.machine_id_leases")?        // validated identifier
+    .auto_create(true)                                // opt-in; default is off
     .epoch(Epoch::DEFAULT)
     .build()                                           // claims an ID, spawns heartbeat task
     .await?;

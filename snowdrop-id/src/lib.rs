@@ -29,12 +29,10 @@
 //!   string; numeric opt-in via [`serde_u64`].
 //! - `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` — `sqlx` `Type`/`Encode`/
 //!   `Decode` impls mapping [`Id`] to `BIGINT`.
-//! - `postgres-machine-id` — machine IDs leased from a Postgres table
-//!   ([`PgMachineIdLease`], [`PgIdGenerator`]), for clusters with no static
-//!   machine-ID assignment; pooler- and failover-safe.
 //!
-//! A companion command-line tool is available as the `snowdrop-id-cli`
-//! crate (`cargo install snowdrop-id-cli`).
+//! Machine-ID leasing from Postgres lives in the companion
+//! `snowdrop-id-postgres` crate; a command-line tool is available as
+//! `snowdrop-id-cli` (`cargo install snowdrop-id-cli`).
 //!
 //! For retrofits where injecting an [`IdGenerator`] isn't practical, the
 //! [`global`] module provides a process-global generator configured once
