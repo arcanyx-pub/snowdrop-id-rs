@@ -12,7 +12,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-snowdrop-id = { version = "0.2.1", path = "../snowdrop-id" }
+snowdrop-id = { version = "0.3.0", path = "../snowdrop-id" }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 tokio = { version = "1", default-features = false, features = ["rt", "time"] }
 # Compile-time SQL assembly so the migration DDL getters return `&'static str`
