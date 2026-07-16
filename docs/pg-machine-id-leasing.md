@@ -1,8 +1,8 @@
 # Design: Postgres machine-ID leasing (`PgIdGenerator`)
 
-**Status:** Draft (targeting v0.2.0)
-**Feature flag:** `postgres-machine-id`
-**Scope:** `snowdrop-id/src/pg_machine_id.rs`
+**Status:** Implemented in v0.2.0; relocated to its own crate in v0.3.0
+**Crate:** `snowdrop-id-postgres`
+**Scope:** `snowdrop-id-postgres/src/lib.rs`
 
 This document explains how `PgIdGenerator` and `PgMachineIdLease` assign a
 unique machine ID to each generator instance out of a shared Postgres

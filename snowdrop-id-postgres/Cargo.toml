@@ -1,0 +1,20 @@
+[package]
+name = "snowdrop-id-postgres"
+description = "Postgres-backed machine-ID leasing for snowdrop-id generators"
+readme = "README.md"
+keywords = ["snowflake", "id", "postgres", "machine-id", "sqlx"]
+categories = ["database", "concurrency"]
+version.workspace = true
+edition.workspace = true
+# sqlx 0.9 raises the MSRV above the core crate's 1.85.
+rust-version = "1.94"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+snowdrop-id = { version = "0.2.1", path = "../snowdrop-id" }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

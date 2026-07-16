@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use snowdrop_id::{PgIdGenerator, PgLeaseError, PgMachineIdLease};
+use snowdrop_id_postgres::{PgIdGenerator, PgLeaseError, PgMachineIdLease};
 use sqlx::PgPool;
 
 async fn pool() -> Option<PgPool> {
