@@ -1,8 +1,28 @@
 # Changelog
 
-Notable changes to the `snowdrop-id` and `snowdrop-id-cli` crates (versioned
-in lockstep). Format follows [Keep a Changelog](https://keepachangelog.com);
-versions follow [SemVer](https://semver.org).
+Notable changes to the `snowdrop-id`, `snowdrop-id-cli`, and
+`snowdrop-id-postgres` crates (versioned in lockstep). Format follows
+[Keep a Changelog](https://keepachangelog.com); versions follow
+[SemVer](https://semver.org).
+
+## [Unreleased]
+
+### Breaking
+
+- Moved Postgres machine-ID leasing out of `snowdrop-id` (the
+  `postgres-machine-id` feature) into a new companion crate,
+  **`snowdrop-id-postgres`**. `PgIdGenerator`, `PgMachineIdLease`, and friends
+  move from `snowdrop_id::` to `snowdrop_id_postgres::`, and the leasing no
+  longer drags the sqlx tokio runtime into the core crate. The thin `sqlx-*`
+  `Id`↔`BIGINT` column mappings stay in `snowdrop-id`.
+- The default lease table moved from `public.snowdrop_machine_id_leases` to
+  **`snowdrop.machine_id_leases`**, in a dedicated `snowdrop` schema. Existing
+  deployments must rename or recreate the table.
+- Schema/table auto-creation is now **opt-in**. The builder no longer creates
+  them by default (creating a schema needs DDL privileges many roles lack);
+  provision from `PgMachineIdLease::schema_sql(..)` in a migration, or call
+  `.auto_create(true)`. The builder method `auto_create_table` is renamed
+  `auto_create` and now creates the schema as well as the table.
 
 ## [0.2.1] - 2026-07-14
 

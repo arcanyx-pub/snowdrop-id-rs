@@ -1,8 +1,8 @@
 //! Postgres-backed machine-ID leasing for `snowdrop-id` generators.
 //!
 //! Machine IDs must be unique among concurrently active generators. This
-//! crate leases them from a small Postgres table, `snowdrop_machine_id_leases`
-//! by default: a worker claims the lowest free machine ID, then a background
+//! crate leases them from a small Postgres table (`snowdrop.machine_id_leases`
+//! by default): a worker claims the lowest free machine ID, then a background
 //! task heartbeats to keep the lease alive. Every operation is a single
 //! autocommit statement with no session state, so — unlike session advisory
 //! locks — it works through a connection pool and under any pgBouncer pooling
@@ -36,8 +36,9 @@ use sqlx::PgPool;
 
 use snowdrop_id::{Epoch, Id, IdGenerator, MachineId, TryGenerateError};
 
-/// Default lease table name.
-pub const DEFAULT_TABLE: &str = "snowdrop_machine_id_leases";
+/// Default lease table name: `machine_id_leases` in a dedicated `snowdrop`
+/// schema, keeping it out of `public`.
+pub const DEFAULT_TABLE: &str = "snowdrop.machine_id_leases";
 
 // --- Timing constants (fixed in v0.2; see docs §6). ------------------------
 
@@ -162,18 +163,41 @@ fn validate_table_name(name: &str) -> Result<(), PgLeaseError> {
     Ok(())
 }
 
+/// Splits a validated table name into its optional schema and the table part.
+fn split_schema(table: &str) -> (Option<&str>, &str) {
+    match table.split_once('.') {
+        Some((schema, tbl)) => (Some(schema), tbl),
+        None => (None, table),
+    }
+}
+
 fn bootstrap_sql(table: &str) -> String {
+    // When the table is schema-qualified, create the schema first. Each step is
+    // its own `BEGIN … EXCEPTION` sub-block so a concurrent creator losing the
+    // race (Postgres can raise duplicate_schema/duplicate_table even under
+    // `IF NOT EXISTS`) is swallowed without aborting the rest of the block.
+    let schema_block = match split_schema(table).0 {
+        Some(schema) => {
+            format!(
+                "BEGIN CREATE SCHEMA {schema}; EXCEPTION WHEN duplicate_schema THEN NULL; END; "
+            )
+        }
+        None => String::new(),
+    };
     format!(
         "DO $$ \
          BEGIN \
-             CREATE TABLE {table} ( \
-                 machine_id        SMALLINT PRIMARY KEY, \
-                 claimed_at        TIMESTAMPTZ, \
-                 reclaimable_after TIMESTAMPTZ \
-             ) WITH (fillfactor = 70); \
-             INSERT INTO {table} (machine_id) SELECT generate_series(0, 1023); \
-         EXCEPTION \
-             WHEN duplicate_table THEN NULL; \
+             {schema_block}\
+             BEGIN \
+                 CREATE TABLE {table} ( \
+                     machine_id        SMALLINT PRIMARY KEY, \
+                     claimed_at        TIMESTAMPTZ, \
+                     reclaimable_after TIMESTAMPTZ \
+                 ) WITH (fillfactor = 70); \
+                 INSERT INTO {table} (machine_id) SELECT generate_series(0, 1023); \
+             EXCEPTION \
+                 WHEN duplicate_table THEN NULL; \
+             END; \
          END $$;"
     )
 }
@@ -329,7 +353,7 @@ impl PgMachineIdLease {
         PgMachineIdLeaseBuilder {
             pool,
             table: DEFAULT_TABLE.to_string(),
-            auto_create: true,
+            auto_create: false,
         }
     }
 
@@ -346,8 +370,10 @@ impl PgMachineIdLease {
         !self.shared.is_fresh()
     }
 
-    /// The DDL that creates the lease table, for callers that manage schema
-    /// through their own migrations instead of auto-creation.
+    /// The DDL that creates the lease schema (if the table is schema-qualified)
+    /// and table, for callers that provision it through their own migrations
+    /// rather than [`auto_create`](PgMachineIdLeaseBuilder::auto_create). Safe
+    /// to run repeatedly and concurrently.
     pub fn schema_sql(table_name: &str) -> Result<String, PgLeaseError> {
         validate_table_name(table_name)?;
         Ok(bootstrap_sql(table_name))
@@ -405,10 +431,15 @@ impl PgMachineIdLeaseBuilder {
         Ok(self)
     }
 
-    /// Sets whether to create the table if it does not exist (default `true`).
-    /// Disable for deployments whose database role cannot run DDL; create the
-    /// table from [`PgMachineIdLease::schema_sql`] in your own migrations.
-    pub fn auto_create_table(mut self, yes: bool) -> PgMachineIdLeaseBuilder {
+    /// Opts into creating the schema and table if they do not exist (default
+    /// `false`).
+    ///
+    /// Off by default: it requires DDL privileges (and, for a schema-qualified
+    /// table, `CREATE` on the database), which many production roles lack.
+    /// Prefer creating the objects from [`PgMachineIdLease::schema_sql`] in your
+    /// own migrations; enable this only for convenience in environments where
+    /// the connecting role may run DDL.
+    pub fn auto_create(mut self, yes: bool) -> PgMachineIdLeaseBuilder {
         self.auto_create = yes;
         self
     }
@@ -582,10 +613,10 @@ impl PgIdGeneratorBuilder {
         Ok(self)
     }
 
-    /// Sets whether to create the table if absent (default `true`); see
-    /// [`PgMachineIdLeaseBuilder::auto_create_table`].
-    pub fn auto_create_table(mut self, yes: bool) -> PgIdGeneratorBuilder {
-        self.lease = self.lease.auto_create_table(yes);
+    /// Opts into creating the schema and table if absent (default `false`);
+    /// see [`PgMachineIdLeaseBuilder::auto_create`].
+    pub fn auto_create(mut self, yes: bool) -> PgIdGeneratorBuilder {
+        self.lease = self.lease.auto_create(yes);
         self
     }
 
@@ -722,5 +753,27 @@ mod tests {
 
         let hb = heartbeat_sql(DEFAULT_TABLE);
         assert!(hb.contains(&format!("{FENCING} = $3")));
+    }
+
+    #[test]
+    fn default_table_lives_in_the_snowdrop_schema() {
+        assert_eq!(DEFAULT_TABLE, "snowdrop.machine_id_leases");
+        assert!(validate_table_name(DEFAULT_TABLE).is_ok());
+        assert_eq!(
+            split_schema(DEFAULT_TABLE),
+            (Some("snowdrop"), "machine_id_leases")
+        );
+    }
+
+    #[test]
+    fn bootstrap_creates_schema_only_when_qualified() {
+        let qualified = bootstrap_sql("snowdrop.machine_id_leases");
+        assert!(qualified.contains("CREATE SCHEMA snowdrop"));
+        assert!(qualified.contains("WHEN duplicate_schema THEN NULL"));
+        assert!(qualified.contains("CREATE TABLE snowdrop.machine_id_leases"));
+
+        let plain = bootstrap_sql("leases");
+        assert!(!plain.contains("CREATE SCHEMA"));
+        assert!(plain.contains("CREATE TABLE leases"));
     }
 }

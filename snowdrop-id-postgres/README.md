@@ -18,15 +18,25 @@ primary failover. A generator refuses to issue IDs while it cannot prove its
 lease is still held, so no two live workers ever share a machine ID.
 
 ```rust
-use snowdrop_id_postgres::PgIdGenerator;
+use snowdrop_id_postgres::{PgIdGenerator, PgMachineIdLease};
 use sqlx::PgPool;
 
 let pool = PgPool::connect("postgres://…").await?;
+
+// The lease table (`snowdrop.machine_id_leases` by default) must exist first.
+// Run this in your migrations…
+sqlx::raw_sql(&PgMachineIdLease::schema_sql("snowdrop.machine_id_leases")?)
+    .execute(&pool)
+    .await?;
+// …or opt into automatic creation with `.builder(pool).auto_create(true)`.
+
 let generator = PgIdGenerator::acquire(pool).await?; // claims the lowest free ID
 let id = generator.generate()?;
 ```
 
-See [`docs/pg-machine-id-leasing.md`](https://github.com/arcanyx-pub/snowdrop-id-rs/blob/main/docs/pg-machine-id-leasing.md)
+Creating the schema and table is **not** automatic by default: it needs DDL
+privileges that many production roles lack. See
+[`docs/pg-machine-id-leasing.md`](https://github.com/arcanyx-pub/snowdrop-id-rs/blob/main/docs/pg-machine-id-leasing.md)
 in the repository for the full design.
 
 ## License

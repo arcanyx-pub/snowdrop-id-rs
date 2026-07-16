@@ -84,8 +84,10 @@ let id = generator.generate()?;
 
 The generator refuses to issue IDs (`PgGenerateError::MachineIdLeaseLost`)
 whenever it cannot prove its lease is still held, so a machine ID is never
-used by two live workers at once. The lease table is created automatically on
-first use; pass a custom table or epoch via `PgIdGenerator::builder(pool)`.
+used by two live workers at once. The lease table
+(`snowdrop.machine_id_leases` by default) is expected to already exist —
+create it from `PgMachineIdLease::schema_sql(..)` in your migrations, or opt
+into automatic creation with `PgIdGenerator::builder(pool).auto_create(true)`.
 See [the design doc](docs/pg-machine-id-leasing.md) for the full rationale.
 
 ### Feature flags

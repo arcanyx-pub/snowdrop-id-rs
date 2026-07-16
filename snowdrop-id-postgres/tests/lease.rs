@@ -38,6 +38,7 @@ async fn leases_lowest_free_and_releases_on_drop() {
     let a = PgMachineIdLease::builder(pool.clone())
         .table_name(table)
         .unwrap()
+        .auto_create(true)
         .build()
         .await
         .unwrap();
@@ -94,13 +95,63 @@ async fn all_ids_held_errors() {
     match PgMachineIdLease::builder(pool.clone())
         .table_name(table)
         .unwrap()
-        .auto_create_table(false)
+        .auto_create(false)
         .build()
         .await
     {
         Err(PgLeaseError::NoMachineIdAvailable) => {}
         other => panic!("expected NoMachineIdAvailable, got {other:?}"),
     }
+}
+
+/// Auto-creation is opt-in: with the default builder, a missing table is a
+/// clean error, not a silent `CREATE`.
+#[tokio::test]
+async fn missing_table_without_auto_create_errors() {
+    let Some(pool) = pool().await else { return };
+    let table = "snowdrop_test_absent_leases";
+    reset(&pool, table).await; // ensure it does not exist
+
+    let result = PgMachineIdLease::builder(pool)
+        .table_name(table)
+        .unwrap()
+        .build() // auto_create defaults to false
+        .await;
+    assert!(
+        matches!(result, Err(PgLeaseError::Database(_))),
+        "expected a database error for the missing table, got {result:?}"
+    );
+}
+
+/// `auto_create(true)` on a schema-qualified table creates the schema too, and
+/// the lease then works entirely within that schema.
+#[tokio::test]
+async fn auto_create_provisions_a_schema_qualified_table() {
+    let Some(pool) = pool().await else { return };
+    let table = "snowdrop_test_schema.machine_id_leases";
+    // Clean slate for the table; the schema may persist across runs, which
+    // exercises the idempotent `CREATE SCHEMA` path.
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+        .execute(&pool)
+        .await
+        .expect("drop failed");
+
+    let lease = PgMachineIdLease::builder(pool.clone())
+        .table_name(table)
+        .unwrap()
+        .auto_create(true)
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(lease.machine_id().get(), 0);
+
+    // The table really lives in the custom schema, prepopulated with 1024 rows.
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM snowdrop_test_schema.machine_id_leases")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, 1024);
 }
 
 #[tokio::test]
@@ -112,6 +163,7 @@ async fn generator_stamps_leased_machine_id() {
     let generator = PgIdGenerator::builder(pool)
         .table_name(table)
         .unwrap()
+        .auto_create(true)
         .build()
         .await
         .unwrap();
@@ -137,6 +189,7 @@ async fn detects_stolen_lease_and_reacquires() {
     let lease = PgMachineIdLease::builder(pool.clone())
         .table_name(table)
         .unwrap()
+        .auto_create(true)
         .build()
         .await
         .unwrap();
