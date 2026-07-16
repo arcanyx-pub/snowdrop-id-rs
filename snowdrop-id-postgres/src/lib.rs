@@ -1,7 +1,7 @@
-//! Machine-ID leasing via a Postgres table (feature `postgres-machine-id`).
+//! Postgres-backed machine-ID leasing for `snowdrop-id` generators.
 //!
 //! Machine IDs must be unique among concurrently active generators. This
-//! module leases them from a small Postgres table, `snowdrop_machine_id_leases`
+//! crate leases them from a small Postgres table, `snowdrop_machine_id_leases`
 //! by default: a worker claims the lowest free machine ID, then a background
 //! task heartbeats to keep the lease alive. Every operation is a single
 //! autocommit statement with no session state, so — unlike session advisory
@@ -24,6 +24,9 @@
 //!
 //! [`claimed_at`]: https://www.postgresql.org/docs/current/functions-datetime.html
 
+#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+
 use core::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU64, Ordering};
@@ -31,8 +34,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sqlx::PgPool;
 
-use crate::generator::TryGenerateError;
-use crate::{Epoch, Id, IdGenerator, MachineId};
+use snowdrop_id::{Epoch, Id, IdGenerator, MachineId, TryGenerateError};
 
 /// Default lease table name.
 pub const DEFAULT_TABLE: &str = "snowdrop_machine_id_leases";
@@ -491,9 +493,9 @@ impl PgIdGenerator {
                 Err(TryGenerateError::SequenceExhausted { retry_after }) => {
                     std::thread::sleep(retry_after);
                 }
-                Err(TryGenerateError::EpochExhausted) => {
-                    return Err(PgGenerateError::EpochExhausted);
-                }
+                // EpochExhausted — and any future terminal variant of the
+                // `#[non_exhaustive]` `TryGenerateError` — is permanent.
+                Err(_) => return Err(PgGenerateError::EpochExhausted),
             }
         }
     }
@@ -510,9 +512,9 @@ impl PgIdGenerator {
                 Err(TryGenerateError::SequenceExhausted { retry_after }) => {
                     tokio::time::sleep(retry_after).await;
                 }
-                Err(TryGenerateError::EpochExhausted) => {
-                    return Err(PgGenerateError::EpochExhausted);
-                }
+                // EpochExhausted — and any future terminal variant of the
+                // `#[non_exhaustive]` `TryGenerateError` — is permanent.
+                Err(_) => return Err(PgGenerateError::EpochExhausted),
             }
         }
     }

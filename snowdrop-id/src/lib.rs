@@ -61,9 +61,6 @@ mod serde_support;
 ))]
 mod sqlx_support;
 
-#[cfg(feature = "postgres-machine-id")]
-mod pg_machine_id;
-
 pub use clock::{Clock, SystemClock};
 pub use epoch::Epoch;
 pub use generator::{GenerateError, IdGenerator, IdGeneratorBuilder, TryGenerateError};
@@ -72,9 +69,3 @@ pub use machine::MachineId;
 
 #[cfg(feature = "serde")]
 pub use serde_support::serde_u64;
-
-#[cfg(feature = "postgres-machine-id")]
-pub use pg_machine_id::{
-    DEFAULT_TABLE, PgGenerateError, PgIdGenerator, PgIdGeneratorBuilder, PgLeaseError,
-    PgMachineIdLease, PgMachineIdLeaseBuilder,
-};

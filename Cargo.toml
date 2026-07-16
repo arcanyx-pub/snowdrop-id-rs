@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["snowdrop-id", "snowdrop-id-cli"]
+members = ["snowdrop-id", "snowdrop-id-cli", "snowdrop-id-postgres"]
 
 [workspace.package]
 version = "0.2.1"

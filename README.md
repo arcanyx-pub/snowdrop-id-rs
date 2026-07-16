@@ -65,16 +65,16 @@ snowdrop_id::global::init(MachineId::new(0).unwrap())?; // in main()
 let id = snowdrop_id::global::generate()?;              // anywhere else
 ```
 
-With the `postgres-machine-id` feature, clusters with no static machine-ID
-assignment can lease one from a Postgres table. A worker claims the lowest
-free machine ID, a background task heartbeats to hold the lease, and the ID
-is released on drop (or reclaimed after the lease expires if the process
-dies). Every operation is a single pooled statement — no session state — so
-it works through PgBouncer in any pooling mode and survives a primary
-failover:
+The companion [`snowdrop-id-postgres`](snowdrop-id-postgres/) crate lets
+clusters with no static machine-ID assignment lease one from a Postgres
+table. A worker claims the lowest free machine ID, a background task
+heartbeats to hold the lease, and the ID is released on drop (or reclaimed
+after the lease expires if the process dies). Every operation is a single
+pooled statement — no session state — so it works through PgBouncer in any
+pooling mode and survives a primary failover:
 
 ```rust
-use snowdrop_id::PgIdGenerator;
+use snowdrop_id_postgres::PgIdGenerator;
 use sqlx::PgPool;
 
 let pool = PgPool::connect("postgres://…").await?;
@@ -95,10 +95,13 @@ See [the design doc](docs/pg-machine-id-leasing.md) for the full rationale.
 | `tokio` | `IdGenerator::generate_async()` |
 | `serde` | `Serialize`/`Deserialize` as the base62 string; numeric via `serde_u64` |
 | `sqlx-postgres`, `sqlx-mysql`, `sqlx-sqlite` | `sqlx` `Type`/`Encode`/`Decode` as `BIGINT` |
-| `postgres-machine-id` | machine IDs leased from a Postgres table (pooler- and failover-safe) |
 
-The core crate and CLI support Rust 1.85+; the sqlx-backed features
-(`sqlx-*`, `postgres-machine-id`) require Rust 1.94+ via sqlx 0.9.
+Machine-ID leasing from Postgres lives in the companion
+[`snowdrop-id-postgres`](snowdrop-id-postgres/) crate (pooler- and
+failover-safe).
+
+The core crate and CLI support Rust 1.85+; the `sqlx-*` features and the
+`snowdrop-id-postgres` crate require Rust 1.94+ via sqlx 0.9.
 
 ## CLI
 
