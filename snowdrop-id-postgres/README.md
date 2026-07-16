@@ -25,7 +25,7 @@ let pool = PgPool::connect("postgres://…").await?;
 
 // The lease table (`snowdrop.machine_id_leases` by default) must exist first.
 // Run this in your migrations…
-sqlx::raw_sql(&PgMachineIdLease::schema_sql("snowdrop.machine_id_leases")?)
+sqlx::raw_sql(&PgMachineIdLease::schema_sql())
     .execute(&pool)
     .await?;
 // …or opt into automatic creation with `.builder(pool).auto_create(true)`.

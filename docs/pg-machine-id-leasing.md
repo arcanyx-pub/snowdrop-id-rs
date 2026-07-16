@@ -178,9 +178,9 @@ Notes:
 - **Auto-DDL is opt-in.** Creating the schema needs `CREATE` on the database and
   creating the table needs DDL rights — privileges many production roles lack —
   so auto-create defaults to **off**. Provision from
-  `PgMachineIdLease::schema_sql(table_name)` (schema + table) in the caller's own
-  migrations, or opt in with `auto_create(true)` where the connecting role may
-  run DDL.
+  `PgMachineIdLease::schema_sql()` (schema + table; `schema_sql_with_table(name)`
+  for a custom name) in the caller's own migrations, or opt in with
+  `auto_create(true)` where the connecting role may run DDL.
 - **The table name is configurable** (this is also how independent ID spaces
   share one database: a different table is a different space). Because a table
   name **cannot be a bound parameter**, it is interpolated as an identifier and
