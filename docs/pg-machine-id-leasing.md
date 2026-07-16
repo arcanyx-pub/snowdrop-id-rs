@@ -111,7 +111,7 @@ WHERE last_heartbeat_at <= NOW() - INTERVAL '30 minutes'   -- constant in the cl
 That embeds a **cluster-wide constant** in every claimer. All workers must
 agree on it, and *changing* it is a hazardous migration: during a rollout, a
 worker using a shorter threshold can declare a slow-but-alive worker (still
-inside its own longer self-poison window) dead, steal its ID, and break
+inside its own longer self-poison window) dead, steal its machine ID, and break
 invariant S.
 
 Instead we store `reclaimable_after`, written by the **holder** using the
@@ -132,11 +132,11 @@ Consequences:
    pushed out by the first heartbeat covers it, so the claim predicate is a
    single clause with **zero policy constants**.
 
-What we give up: the global upper bound on how long a dead worker's ID stays
-locked is now whatever deadline the holder last wrote. In v0.2, with a fixed
+What we give up: the global upper bound on how long a dead worker's machine ID
+stays locked is now whatever deadline the holder last wrote. In v0.2, with a fixed
 `reclaim_ttl`, that is simply 30 min. The concern only becomes real once the
 TTL is tunable (§10), where a builder-enforced `max_ttl` restores the bound;
-either way the blast radius is a single self-inflicted ID, never a fleet
+either way the blast radius is a single self-inflicted machine ID, never a fleet
 problem.
 
 ---
@@ -153,7 +153,7 @@ interval type, no extra `sqlx` feature.
 The builder creates nothing by default — creating a table needs DDL rights, and
 a non-`public` schema needs `CREATE` on the database, which many roles lack.
 Provisioning is opt-in and split by concern, so it serves migration and
-declarative (Atlas/Skeema) workflows that manage schema and seed data
+declarative (e.g. Atlas) workflows that manage schema and seed data
 separately:
 
 - **`auto_provision(true)`** — creates the schema (only when non-`public`), the
@@ -211,7 +211,7 @@ state is exactly what breaks under transaction pooling.
 
 A CTE picks the lowest free row and claims it; the outer `SELECT` also reports
 whether the table has any seed rows, so a caller can tell "nothing claimed
-because the table is empty" from "…because every ID is leased" — in one
+because the table is empty" from "…because every machine ID is leased" — in one
 statement, always returning exactly one row.
 
 ```sql
@@ -222,7 +222,7 @@ WITH candidate AS (
     FROM "public"."snowdrop_machine_id_leases"
     WHERE machine_id BETWEEN 0 AND 1023
       AND (reclaimable_after IS NULL OR reclaimable_after <= NOW())
-    ORDER BY machine_id ASC           -- lowest free ID → shortest base62 strings
+    ORDER BY machine_id ASC           -- lowest free machine ID → shortest base62 strings
     LIMIT 1
     FOR UPDATE SKIP LOCKED            -- concurrent claimers never pick the same row
 ),
@@ -248,11 +248,11 @@ COMMIT;
 - **`ORDER BY machine_id ASC`** is required, not incidental: without it
   `LIMIT 1` returns an arbitrary eligible row (heap order, which drifts after
   updates and vacuum). The spec makes "low machine IDs → shorter base62
-  strings" a real property, so we hand out the lowest free ID deterministically.
+  strings" a real property, so we hand out the lowest free machine ID deterministically.
 - **`machine_id BETWEEN 0 AND 1023`** guards against out-of-range rows a
-  caller-managed table might hold, so a claimed ID always fits `MachineId`.
+  caller-managed table might hold, so a claimed machine ID always fits `MachineId`.
 - **The result row** maps to three outcomes: `machine_id` non-NULL → claimed;
-  else `seeded = false` → `PgLeaseError::TableNotSeeded`; else → every ID held →
+  else `seeded = false` → `PgLeaseError::TableNotSeeded`; else → every machine ID held →
   `PgLeaseError::NoMachineIdAvailable`. (A missing table is a separate
   relation-does-not-exist database error.)
 
@@ -270,7 +270,7 @@ WHERE machine_id = $2
 
 **Rows affected = 0 ⇒ the lease was stolen** (someone re-claimed the row, so
 `claimed_at` and thus the fencing token changed). The worker poisons and
-re-claims a fresh ID. Rows affected = 1 ⇒ lease renewed; record a new local
+re-claims a fresh machine ID. Rows affected = 1 ⇒ lease renewed; record a new local
 expiry (§6).
 
 ### 4.4 Release (best-effort, on drop)
@@ -278,8 +278,8 @@ expiry (§6).
 `Drop` cannot `await`, and blocking the runtime in `Drop` is worse than the
 problem it solves, so release is **fire-and-forget**: spawn a detached task
 that runs the fenced release and let it race the runtime shutdown. If it does
-not land, the deadline reclaims the ID anyway — release is purely a latency
-optimization for ID reuse, never a correctness requirement.
+not land, the deadline reclaims the machine ID anyway — release is purely a latency
+optimization for machine-ID reuse, never a correctness requirement.
 
 ```sql
 UPDATE "public"."snowdrop_machine_id_leases"
@@ -333,7 +333,7 @@ token); a dedicated counter column (rejected to avoid a fourth column when
 The fencing token only protects **writes to the lease table**. It does **not**
 protect **ID generation**, which never touches the database. So on its own the
 token buys only *detection latency of one heartbeat interval* — a worker whose
-lease was stolen keeps generating under the stolen ID until its next heartbeat
+lease was stolen keeps generating under the stolen machine ID until its next heartbeat
 fails. Closing that gap is self-poisoning (§6). Fencing **detects** a lost
 lease; self-poison **prevents generation** while it is in doubt. Both are
 required.
@@ -346,7 +346,7 @@ required.
 
 A timeout lease can falsely declare a live-but-slow worker dead. The only
 defense is that the worker itself **stops generating before anyone may steal
-its ID**:
+its machine ID**:
 
 > On every successful claim/heartbeat, record a local expiry. `generate()`
 > refuses (poisons) once the worker cannot prove its lease is still fresh.
@@ -405,7 +405,7 @@ Residual trusted assumption: the **DB server's clock** is the shared reference.
 A large *forward* jump there could free live leases early, so the database node
 needs ordinary NTP discipline. This is the same class of assumption as the
 SPEC §5.3 restart hazard, and the reclaim TTL gives it a concrete bound: a
-worker re-claims an ID only ≥ `reclaim_ttl` after the prior holder's last
+worker re-claims a machine ID only ≥ `reclaim_ttl` after the prior holder's last
 heartbeat, so unless a clock rewinds more than `reclaim_ttl`, a fresh
 generator's timestamps strictly exceed the previous holder's.
 
@@ -423,8 +423,8 @@ verify once with `const` assertions at compile time, not runtime validation:
    generation) — the core inequality of §6.1.
 
 When timing becomes configurable (§10) these graduate into builder-time
-validation, plus a `max_ttl` cap to bound how long a dead worker can squat an
-ID (§3.1).
+validation, plus a `max_ttl` cap to bound how long a dead worker can squat a
+machine ID (§3.1).
 
 ---
 
@@ -432,22 +432,22 @@ ID (§3.1).
 
 | Scenario | Outcome |
 |---|---|
-| **GC / STW pause** past the deadline | Monotonic clock advances through the pause → worker self-poisons on resume; meanwhile its ID may have been stolen (correctly). No collision. |
+| **GC / STW pause** past the deadline | Monotonic clock advances through the pause → worker self-poisons on resume; meanwhile its machine ID may have been stolen (correctly). No collision. |
 | **VM suspend** past the deadline | Monotonic clock frozen, but wall-clock check (§6.3) trips → self-poison on resume. No collision. |
 | **Network partition to DB** | Heartbeats fail; deadline not pushed; worker self-poisons at `self_poison_after`, before the row is stealable at `reclaim_ttl`. On reconnect it re-claims. |
 | **Transient DB blip** (< heartbeat slack) | Deadline still in the future; worker keeps generating; next heartbeat repushes. No poison, no special-casing. |
-| **Crash before first heartbeat** | `reclaimable_after` = claim + bootloop grace → ID freed in ~60 s. |
+| **Crash before first heartbeat** | `reclaimable_after` = claim + bootloop grace → the machine ID is freed in ~60 s. |
 | **Primary failover** | Lease row replicated; heartbeats resume against the new primary through the pool. No dedicated connection to lose. |
 | **Lease stolen while holder alive** | Holder's next heartbeat sees fencing mismatch (0 rows) → poisons and re-claims. Between steal and detection it is *not* generating, because it already self-poisoned at `self_poison_after` (which precedes the steal). |
 | **DB clock forward jump** | Can free live leases early → possible collision. Out of scope; mitigated by NTP on the DB node (§6.3). |
-| **All IDs held** | Claim returns 0 rows → `NoMachineIdAvailable`. |
+| **All machine IDs held** | Claim returns 0 rows → `NoMachineIdAvailable`. |
 
 ---
 
 ## 8. Deliberately dropped
 
-- **`reclaim_token`.** Its only real benefit (reclaiming an ID before the
-  timeout, e.g. to bound a crash-looper to one ID) requires bypassing the
+- **`reclaim_token`.** Its only real benefit (reclaiming a machine ID before the
+  timeout, e.g. to bound a crash-looper to one machine ID) requires bypassing the
   freshness check — which is exactly the "steal from a live worker" footgun.
   The useful version *is* the dangerous version. Boot-loop exhaustion is already
   bounded by the fast first heartbeat + 60 s grace. Additive to re-add later if
@@ -471,18 +471,18 @@ use snowdrop_id_postgres::{PgIdGenerator, PgMachineIdLease};
 use snowdrop_id::Epoch;
 
 // Provision once (migration) — or skip and use .auto_provision(true) below.
-sqlx::raw_sql(sqlx::AssertSqlSafe(PgMachineIdLease::schema_sql())).execute(&pool).await?;
-sqlx::raw_sql(sqlx::AssertSqlSafe(PgMachineIdLease::seeding_sql())).execute(&pool).await?;
+sqlx::raw_sql(PgMachineIdLease::schema_sql()).execute(&pool).await?;   // &'static str
+sqlx::raw_sql(PgMachineIdLease::seeding_sql()).execute(&pool).await?;
 
 let generator = PgIdGenerator::builder(pool)          // caller-provided PgPool
     .schema_name("public")?                           // default; quoted, isolated ID space
     .auto_provision(false)                            // default: nothing is created
     .epoch(Epoch::DEFAULT)
-    .build()                                           // claims an ID, spawns heartbeat task
+    .build()                                           // claims a machine ID, spawns heartbeat task
     .await?;
 
 let id = generator.generate()?;      // self-poisons if the lease is not provably fresh
-generator.machine_id();              // current leased ID (may change after a steal + re-claim)
+generator.machine_id();              // current leased machine ID (may change after a steal + re-claim)
 generator.is_poisoned();             // observability
 // Drop → best-effort fenced release
 ```
@@ -501,14 +501,14 @@ unused knob is just another footgun. Likely candidates, once there is evidence
 for them:
 
 - **Tunable timings.** Promote the §6.2 constants to railed builder methods
-  (§6.4), with a `max_ttl` cap to bound how long a dead worker can squat an ID.
+  (§6.4), with a `max_ttl` cap to bound how long a dead worker can squat a machine ID.
 - **Scale-to-zero / intermittent-traffic databases.** A service with low,
   bursty traffic backed by a scale-to-zero Postgres may want a very long
   heartbeat interval — on the order of a day — so heartbeats do not keep the
   database perpetually awake and billed. That pulls several decisions with it:
   `reclaim_ttl` must grow to match (so a day-long heartbeat still tolerates a
   missed beat), which lengthens the worst-case reclaim latency, which is exactly
-  the case where reclaiming a *specific* prior ID quickly becomes valuable
+  the case where reclaiming a *specific* prior machine ID quickly becomes valuable
   again — see `footgun_reclaim_token` below.
 - **`footgun_reclaim_token`.** A power-user opt-in to reclaim a specific machine
   ID by a caller-supplied token (e.g. a StatefulSet ordinal) *before* its

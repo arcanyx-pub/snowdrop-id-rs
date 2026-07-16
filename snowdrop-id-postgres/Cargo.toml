@@ -15,6 +15,9 @@ repository.workspace = true
 snowdrop-id = { version = "0.2.1", path = "../snowdrop-id" }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 tokio = { version = "1", default-features = false, features = ["rt", "time"] }
+# Compile-time SQL assembly so the migration DDL getters return `&'static str`
+# (usable with `sqlx::raw_sql` without `AssertSqlSafe`).
+const_format = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
