@@ -1,0 +1,36 @@
+name: Publish
+
+# Triggered by `just publish`, which pushes a `v<version>` tag after the
+# version-bump PR has merged to main. Publishes to crates.io using Trusted
+# Publishing (OIDC) — no long-lived CARGO_REGISTRY_TOKEN secret.
+#
+# One-time setup (per crate, in the crates.io web UI → crate Settings → Trusted
+# Publishing): add a GitHub publisher for repo `arcanyx-pub/snowdrop-id-rs`,
+# workflow `publish.yml`. See docs/RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for crates.io Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Verify every crate packages and builds cleanly before publishing any of
+      # them, so a mid-workspace failure can't leave a half-published release.
+      - name: Verify packaging
+        run: cargo package --workspace --locked
+      - name: Mint a short-lived crates.io token via OIDC
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish
+        # cargo publishes workspace members in dependency order and waits for
+        # each to index before the next.
+        run: cargo publish --workspace --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
