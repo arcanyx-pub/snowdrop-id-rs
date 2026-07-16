@@ -206,8 +206,9 @@ SELECT generate_series(0, 1023) ON CONFLICT (machine_id) DO NOTHING;
 Wrapped in an explicit `READ COMMITTED` transaction so the caller's database
 default (which we do not own) cannot silently make it `SERIALIZABLE` and throw
 spurious serialization failures. The isolation level is set **per transaction**
-(`BEGIN ISOLATION LEVEL READ COMMITTED`), never `SET SESSION` — session-scoped
-state is exactly what breaks under transaction pooling.
+(a `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` as the transaction's first
+statement), never `SET SESSION` — session-scoped state is exactly what breaks
+under transaction pooling.
 
 A CTE picks the lowest free row and claims it; the outer `SELECT` also reports
 whether the table has any seed rows, so a caller can tell "nothing claimed
@@ -215,7 +216,8 @@ because the table is empty" from "…because every machine ID is leased" — in 
 statement, always returning exactly one row.
 
 ```sql
-BEGIN ISOLATION LEVEL READ COMMITTED;
+BEGIN;
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
 
 WITH candidate AS (
     SELECT machine_id
