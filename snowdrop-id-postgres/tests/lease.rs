@@ -1,9 +1,9 @@
 //! Integration tests for Postgres lease-table machine-ID assignment.
 //!
 //! Require a live Postgres: set `SNOWDROP_TEST_PG_URL` (e.g.
-//! `postgres://postgres:postgres@localhost:5432/postgres`); tests skip
-//! silently when it is unset. Each test uses a distinct table so they are
-//! isolated and can run concurrently against one database.
+//! `postgres://postgres:postgres@localhost:5432/postgres`); tests skip silently
+//! when it is unset. The table name is fixed, so each test isolates itself in a
+//! distinct schema and drops it on entry.
 
 use std::time::{Duration, Instant};
 
@@ -20,30 +20,37 @@ async fn pool() -> Option<PgPool> {
     }
 }
 
-/// Fresh, empty table state for a test: drop any leftover from a prior run so
-/// auto-create rebuilds it prepopulated.
-async fn reset(pool: &PgPool, table: &str) {
-    sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
-        .execute(pool)
-        .await
-        .expect("drop failed");
+/// The quoted, qualified lease-table reference for a schema (mirrors the crate's
+/// private helper) — for direct SQL in tests.
+fn qualified(schema: &str) -> String {
+    format!("\"{schema}\".\"snowdrop_machine_id_leases\"")
+}
+
+/// Cold-start a test's schema: drop it (and its table) if a prior run left it.
+async fn drop_schema(pool: &PgPool, schema: &str) {
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+    )))
+    .execute(pool)
+    .await
+    .expect("drop schema failed");
 }
 
 #[tokio::test]
 async fn leases_lowest_free_and_releases_on_drop() {
     let Some(pool) = pool().await else { return };
-    let table = "snowdrop_test_lease_release";
-    reset(&pool, table).await;
+    let schema = "snowdrop_test_release";
+    drop_schema(&pool, schema).await;
 
     let a = PgMachineIdLease::builder(pool.clone())
-        .table_name(table)
+        .schema_name(schema)
         .unwrap()
-        .auto_create(true)
+        .auto_provision(true)
         .build()
         .await
         .unwrap();
     let b = PgMachineIdLease::builder(pool.clone())
-        .table_name(table)
+        .schema_name(schema)
         .unwrap()
         .build()
         .await
@@ -58,7 +65,7 @@ async fn leases_lowest_free_and_releases_on_drop() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let c = PgMachineIdLease::builder(pool.clone())
-            .table_name(table)
+            .schema_name(schema)
             .unwrap()
             .build()
             .await
@@ -75,27 +82,32 @@ async fn leases_lowest_free_and_releases_on_drop() {
 #[tokio::test]
 async fn all_ids_held_errors() {
     let Some(pool) = pool().await else { return };
-    let table = "snowdrop_test_lease_exhausted";
-    reset(&pool, table).await;
+    let schema = "snowdrop_test_exhausted";
+    drop_schema(&pool, schema).await;
 
-    // Create the table via the published DDL, then mark every row held far
-    // into the future without acquiring any lease.
-    let ddl = PgMachineIdLease::schema_sql_with_table(table).unwrap();
-    sqlx::query(sqlx::AssertSqlSafe(ddl))
+    // Provision via the published DDL/seed, then mark every row held far into the
+    // future without acquiring any lease.
+    let ddl = PgMachineIdLease::schema_sql_with_schema(schema).unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let seed = PgMachineIdLease::seeding_sql_with_schema(schema).unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(seed))
         .execute(&pool)
         .await
         .unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "UPDATE {table} SET claimed_at = NOW(), reclaimable_after = NOW() + INTERVAL '1 hour'"
+        "UPDATE {} SET claimed_at = NOW(), reclaimable_after = NOW() + INTERVAL '1 hour'",
+        qualified(schema)
     )))
     .execute(&pool)
     .await
     .unwrap();
 
     match PgMachineIdLease::builder(pool.clone())
-        .table_name(table)
+        .schema_name(schema)
         .unwrap()
-        .auto_create(false)
         .build()
         .await
     {
@@ -104,18 +116,18 @@ async fn all_ids_held_errors() {
     }
 }
 
-/// Auto-creation is opt-in: with the default builder, a missing table is a
-/// clean error, not a silent `CREATE`.
+/// A table that doesn't exist (schema absent) with the default builder is a
+/// clean database error, not a panic.
 #[tokio::test]
-async fn missing_table_without_auto_create_errors() {
+async fn missing_table_without_provision_errors() {
     let Some(pool) = pool().await else { return };
-    let table = "snowdrop_test_absent_leases";
-    reset(&pool, table).await; // ensure it does not exist
+    let schema = "snowdrop_test_absent";
+    drop_schema(&pool, schema).await;
 
     let result = PgMachineIdLease::builder(pool)
-        .table_name(table)
+        .schema_name(schema)
         .unwrap()
-        .build() // auto_create defaults to false
+        .build() // auto_provision defaults to false
         .await;
     assert!(
         matches!(result, Err(PgLeaseError::Database(_))),
@@ -123,57 +135,89 @@ async fn missing_table_without_auto_create_errors() {
     );
 }
 
-/// `auto_create(true)` on a schema-qualified table creates the schema too, and
-/// the lease then works entirely within that schema.
+/// A provisioned-but-unseeded table reports `TableNotSeeded`, distinct from
+/// `NoMachineIdAvailable`; seeding then makes it work.
 #[tokio::test]
-async fn auto_create_provisions_a_schema_qualified_table() {
+async fn unseeded_table_is_distinguished_from_exhausted() {
     let Some(pool) = pool().await else { return };
-    let table = "snowdrop_test_schema.machine_id_leases";
-    // Clean slate for the table; the schema may persist across runs, which
-    // exercises the idempotent `CREATE SCHEMA` path.
-    sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+    let schema = "snowdrop_test_unseeded";
+    drop_schema(&pool, schema).await;
+
+    // Create the schema + table but do NOT seed it.
+    let ddl = PgMachineIdLease::schema_sql_with_schema(schema).unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
         .execute(&pool)
         .await
-        .expect("drop failed");
+        .unwrap();
+
+    match PgMachineIdLease::builder(pool.clone())
+        .schema_name(schema)
+        .unwrap()
+        .build()
+        .await
+    {
+        Err(PgLeaseError::TableNotSeeded) => {}
+        other => panic!("expected TableNotSeeded, got {other:?}"),
+    }
+
+    // Seed it, and acquisition succeeds.
+    let seed = PgMachineIdLease::seeding_sql_with_schema(schema).unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(seed))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let lease = PgMachineIdLease::builder(pool)
+        .schema_name(schema)
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(lease.machine_id().get(), 0);
+}
+
+/// `auto_provision(true)` on a custom schema creates the schema and table and
+/// seeds all 1024 rows.
+#[tokio::test]
+async fn auto_provision_creates_and_seeds() {
+    let Some(pool) = pool().await else { return };
+    let schema = "snowdrop_test_provision";
+    drop_schema(&pool, schema).await;
 
     let lease = PgMachineIdLease::builder(pool.clone())
-        .table_name(table)
+        .schema_name(schema)
         .unwrap()
-        .auto_create(true)
+        .auto_provision(true)
         .build()
         .await
         .unwrap();
     assert_eq!(lease.machine_id().get(), 0);
 
-    // The table really lives in the custom schema, prepopulated with 1024 rows.
-    let rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM snowdrop_test_schema.machine_id_leases")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*) FROM {}",
+        qualified(schema)
+    )))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(rows, 1024);
 }
 
-/// Concurrent `auto_create(true)` from a cold start (no schema, no table) must
-/// be race-safe: one creator wins, the rest tolerate the race, and every lease
-/// still gets a distinct machine ID.
+/// Concurrent `auto_provision(true)` from a cold start must be race-safe: one
+/// creator wins, the rest tolerate the race, all get distinct machine IDs.
 #[tokio::test]
-async fn concurrent_auto_create_is_race_safe() {
+async fn concurrent_auto_provision_is_race_safe() {
     let Some(pool) = pool().await else { return };
-    // Cold start: drop the whole schema so the very first CREATE SCHEMA races.
-    sqlx::query("DROP SCHEMA IF EXISTS snowdrop_test_race CASCADE")
-        .execute(&pool)
-        .await
-        .expect("drop schema failed");
+    let schema = "snowdrop_test_race";
+    drop_schema(&pool, schema).await;
 
     let mut handles = Vec::new();
     for _ in 0..12 {
         let pool = pool.clone();
         handles.push(tokio::spawn(async move {
             PgMachineIdLease::builder(pool)
-                .table_name("snowdrop_test_race.machine_id_leases")
+                .schema_name("snowdrop_test_race")
                 .unwrap()
-                .auto_create(true)
+                .auto_provision(true)
                 .build()
                 .await
         }));
@@ -184,7 +228,7 @@ async fn concurrent_auto_create_is_race_safe() {
         leases.push(
             h.await
                 .unwrap()
-                .expect("concurrent auto-create should not race-fail"),
+                .expect("concurrent auto-provision should not race-fail"),
         );
     }
     // Hold every lease alive while checking, so no ID is released and reused.
@@ -196,16 +240,34 @@ async fn concurrent_auto_create_is_race_safe() {
     );
 }
 
+/// A reserved-word schema name works, because the identifier is quoted.
+#[tokio::test]
+async fn reserved_word_schema_name_works() {
+    let Some(pool) = pool().await else { return };
+    let schema = "order"; // SQL reserved word
+    drop_schema(&pool, schema).await;
+
+    let lease = PgMachineIdLease::builder(pool)
+        .schema_name(schema)
+        .unwrap()
+        .auto_provision(true)
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(lease.machine_id().get(), 0);
+    drop(lease);
+}
+
 #[tokio::test]
 async fn generator_stamps_leased_machine_id() {
     let Some(pool) = pool().await else { return };
-    let table = "snowdrop_test_lease_generate";
-    reset(&pool, table).await;
+    let schema = "snowdrop_test_generate";
+    drop_schema(&pool, schema).await;
 
     let generator = PgIdGenerator::builder(pool)
-        .table_name(table)
+        .schema_name(schema)
         .unwrap()
-        .auto_create(true)
+        .auto_provision(true)
         .build()
         .await
         .unwrap();
@@ -219,38 +281,38 @@ async fn generator_stamps_leased_machine_id() {
     assert_eq!(b.machine_id().get(), machine_id);
 }
 
-/// A row whose fencing token was rotated out from under a live lease (as a
-/// steal would do) must be detected on the next heartbeat, poisoning the lease
-/// and driving a re-claim onto a fresh machine ID.
+/// A row whose fencing token was rotated out from under a live lease (as a steal
+/// would do) must be detected on the next heartbeat, poisoning the lease and
+/// driving a re-claim onto a fresh machine ID.
 #[tokio::test]
 async fn detects_stolen_lease_and_reacquires() {
     let Some(pool) = pool().await else { return };
-    let table = "snowdrop_test_lease_stolen";
-    reset(&pool, table).await;
+    let schema = "snowdrop_test_stolen";
+    drop_schema(&pool, schema).await;
 
     let lease = PgMachineIdLease::builder(pool.clone())
-        .table_name(table)
+        .schema_name(schema)
         .unwrap()
-        .auto_create(true)
+        .auto_provision(true)
         .build()
         .await
         .unwrap();
     assert_eq!(lease.machine_id().get(), 0);
 
     // Simulate a steal: rotate machine ID 0's claimed_at so the lease's stored
-    // fencing token no longer matches, and occupy nothing else so re-claim can
-    // only land on ID 0 again once we free it — instead leave 0 "held" by the
-    // rotation and let re-claim pick the next free ID (1).
+    // fencing token no longer matches, and hold the row so re-claim must land on
+    // the next free ID (1).
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "UPDATE {table} SET claimed_at = NOW() + INTERVAL '1 second', \
-         reclaimable_after = NOW() + INTERVAL '1 hour' WHERE machine_id = 0"
+        "UPDATE {} SET claimed_at = NOW() + INTERVAL '1 second', \
+         reclaimable_after = NOW() + INTERVAL '1 hour' WHERE machine_id = 0",
+        qualified(schema)
     )))
     .execute(&pool)
     .await
     .unwrap();
 
-    // The background task heartbeats ~20s after claim; wait for it to notice
-    // the fencing mismatch and re-acquire a different ID.
+    // The background task heartbeats ~20s after claim; wait for it to notice the
+    // fencing mismatch and re-acquire a different ID.
     let deadline = Instant::now() + Duration::from_secs(40);
     loop {
         if lease.machine_id().get() == 1 && !lease.is_poisoned() {

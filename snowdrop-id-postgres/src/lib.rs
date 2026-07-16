@@ -1,15 +1,18 @@
 //! Postgres-backed machine-ID leasing for `snowdrop-id` generators.
 //!
 //! Machine IDs must be unique among concurrently active generators. This
-//! crate leases them from a small Postgres table (`snowdrop.machine_id_leases`
-//! by default): a worker claims the lowest free machine ID, then a background
-//! task heartbeats to keep the lease alive. Every operation is a single
-//! autocommit statement with no session state, so — unlike session advisory
-//! locks — it works through a connection pool and under any pgBouncer pooling
-//! mode, and survives a primary failover.
+//! crate leases them from a small Postgres table
+//! (`public.snowdrop_machine_id_leases` by default): a worker claims the lowest
+//! free machine ID, then a background task heartbeats to keep the lease alive.
+//! Every operation is a single autocommit statement with no session state, so —
+//! unlike session advisory locks — it works through a connection pool and under
+//! any pgBouncer pooling mode, and survives a primary failover.
 //!
-//! See `docs/pg-machine-id-leasing.md` for the full design rationale. The
-//! safety-critical points:
+//! Provisioning fits three workflows: `auto_provision(true)` creates and seeds
+//! the table on boot (needs DDL rights); or run
+//! [`PgMachineIdLease::schema_sql`] and [`PgMachineIdLease::seeding_sql`] in
+//! your own migrations. See `docs/pg-machine-id-leasing.md` for the full design
+//! rationale. The safety-critical points:
 //!
 //! - **Liveness is holder-declared.** Each lease row stores `reclaimable_after`,
 //!   a deadline the holder pushes forward on every heartbeat. A claimer steals a
@@ -36,9 +39,21 @@ use sqlx::PgPool;
 
 use snowdrop_id::{Epoch, Id, IdGenerator, MachineId, TryGenerateError};
 
-/// Default lease table name: `machine_id_leases` in a dedicated `snowdrop`
-/// schema, keeping it out of `public`.
-pub const DEFAULT_TABLE: &str = "snowdrop.machine_id_leases";
+/// Default schema for the lease table: `public` (the connection's default), so
+/// a lease needs only create-table rights — not `CREATE` on the database for a
+/// dedicated schema. Override with
+/// [`schema_name`](PgMachineIdLeaseBuilder::schema_name).
+pub const DEFAULT_SCHEMA: &str = "public";
+
+/// Fixed, `snowdrop_`-prefixed lease table name (unqualified). The prefix keeps
+/// it collision-safe in a shared schema like `public`.
+const LEASES_TABLE: &str = "snowdrop_machine_id_leases";
+
+/// The lease table's column definition, shared by every DDL flavor so the shape
+/// is defined in one place.
+const LEASES_COLUMNS: &str = "machine_id SMALLINT PRIMARY KEY, \
+                              claimed_at TIMESTAMPTZ, \
+                              reclaimable_after TIMESTAMPTZ";
 
 // --- Timing constants (fixed in v0.2; see docs §6). ------------------------
 
@@ -136,69 +151,59 @@ impl LeaseShared {
     }
 }
 
-// --- Table-name validation & SQL construction. -----------------------------
+// --- Schema-name validation & SQL construction. ----------------------------
 
-/// Validates a lease table name. It is interpolated as a SQL identifier (table
-/// names cannot be bound parameters), so it must be an allowlisted identifier,
-/// optionally schema-qualified (`schema.table`).
-fn validate_table_name(name: &str) -> Result<(), PgLeaseError> {
-    let invalid = || PgLeaseError::InvalidTableName(name.to_string());
-    let parts: Vec<&str> = name.split('.').collect();
-    if parts.len() > 2 {
+/// Validates a schema name. It is interpolated as a (quoted) SQL identifier —
+/// schema names cannot be bound parameters — so it must be a single allowlisted
+/// identifier: ASCII letters/digits/underscore, not starting with a digit, at
+/// most 63 bytes. Quoting lets reserved words (e.g. `order`) work and makes
+/// matching case-sensitive.
+fn validate_schema_name(name: &str) -> Result<(), PgLeaseError> {
+    let invalid = || PgLeaseError::InvalidSchemaName(name.to_string());
+    if name.is_empty() || name.len() > 63 {
         return Err(invalid());
     }
-    for part in parts {
-        if part.is_empty() || part.len() > 63 {
-            return Err(invalid());
-        }
-        let mut chars = part.chars();
-        let first = chars.next().expect("non-empty checked above");
-        if !(first.is_ascii_alphabetic() || first == '_') {
-            return Err(invalid());
-        }
-        if !part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Err(invalid());
-        }
+    let mut chars = name.chars();
+    let first = chars.next().expect("non-empty checked above");
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(invalid());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(invalid());
     }
     Ok(())
 }
 
-/// Splits a validated table name into its optional schema and the table part.
-fn split_schema(table: &str) -> (Option<&str>, &str) {
-    match table.split_once('.') {
-        Some((schema, tbl)) => (Some(schema), tbl),
-        None => (None, table),
-    }
+/// The quoted, schema-qualified lease table reference, e.g.
+/// `"public"."snowdrop_machine_id_leases"`. `schema` must already be validated.
+fn qualified(schema: &str) -> String {
+    format!("\"{schema}\".\"{LEASES_TABLE}\"")
 }
 
-fn bootstrap_sql(table: &str) -> String {
-    // When the table is schema-qualified, create the schema first. Each step is
-    // its own `BEGIN … EXCEPTION` sub-block that swallows both the already-exists
-    // error (`duplicate_schema` / `duplicate_table`, from a committed prior
-    // creation) and `unique_violation` (raised on the `pg_namespace` /
-    // `pg_class` unique index when a *concurrent* creator wins the race), so
-    // first-boot fan-out and parallel migration runners are safe without
-    // aborting the rest of the block.
-    let schema_block = match split_schema(table).0 {
-        Some(schema) => {
-            format!(
-                "BEGIN CREATE SCHEMA {schema}; \
-                 EXCEPTION WHEN duplicate_schema OR unique_violation THEN NULL; END; "
-            )
-        }
-        None => String::new(),
+/// Race-safe provisioning DDL for `auto_provision` — the concurrent first-boot
+/// path. Each `CREATE` is its own `BEGIN … EXCEPTION` sub-block that swallows
+/// both the already-committed error (`duplicate_schema` / `duplicate_table`) and
+/// the `unique_violation` a simultaneous creator hits on the `pg_namespace` /
+/// `pg_class` unique index, so N instances creating at once all succeed. Seeding
+/// is separate ([`seeding_ddl`]).
+fn provision_sql(schema: &str) -> String {
+    let table = qualified(schema);
+    // `public` always exists; creating it needs `CREATE`-on-database that the
+    // role may lack, so skip it.
+    let schema_block = if schema == DEFAULT_SCHEMA {
+        String::new()
+    } else {
+        format!(
+            "BEGIN CREATE SCHEMA \"{schema}\"; \
+             EXCEPTION WHEN duplicate_schema OR unique_violation THEN NULL; END; "
+        )
     };
     format!(
         "DO $$ \
          BEGIN \
              {schema_block}\
              BEGIN \
-                 CREATE TABLE {table} ( \
-                     machine_id        SMALLINT PRIMARY KEY, \
-                     claimed_at        TIMESTAMPTZ, \
-                     reclaimable_after TIMESTAMPTZ \
-                 ) WITH (fillfactor = 70); \
-                 INSERT INTO {table} (machine_id) SELECT generate_series(0, 1023); \
+                 CREATE TABLE {table} ({LEASES_COLUMNS}) WITH (fillfactor = 70); \
              EXCEPTION \
                  WHEN duplicate_table OR unique_violation THEN NULL; \
              END; \
@@ -206,17 +211,56 @@ fn bootstrap_sql(table: &str) -> String {
     )
 }
 
+/// Idempotent DDL for a one-time migration: creates the schema (unless the
+/// default `public`) and the table if absent. Not race-safe — intended to run
+/// once during a migration/deploy, not concurrently from many instances (use
+/// `auto_provision` for that). Additive schema changes in future versions append
+/// `ALTER TABLE … ADD COLUMN IF NOT EXISTS`.
+fn schema_ddl(schema: &str) -> String {
+    let table = qualified(schema);
+    let schema_stmt = if schema == DEFAULT_SCHEMA {
+        String::new()
+    } else {
+        format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\"; ")
+    };
+    format!(
+        "{schema_stmt}\
+         CREATE TABLE IF NOT EXISTS {table} ({LEASES_COLUMNS}) WITH (fillfactor = 70);"
+    )
+}
+
+/// Idempotent seed: inserts the 1024 machine-ID rows. No-op on re-run and safe
+/// under concurrency (`ON CONFLICT DO NOTHING`).
+fn seeding_ddl(schema: &str) -> String {
+    let table = qualified(schema);
+    format!(
+        "INSERT INTO {table} (machine_id) SELECT generate_series(0, 1023) \
+         ON CONFLICT (machine_id) DO NOTHING;"
+    )
+}
+
+/// The claim statement (`table` is the quoted, qualified reference). A CTE picks
+/// the lowest free row with `FOR UPDATE SKIP LOCKED` and claims it; the outer
+/// `SELECT` also reports whether the table has any seed rows, so a caller can
+/// tell "nothing claimed because the table is empty" from "…because every ID is
+/// leased". Always returns exactly one row.
 fn claim_sql(table: &str) -> String {
     format!(
-        "UPDATE {table} \
-         SET claimed_at = NOW(), reclaimable_after = NOW() + $1 * INTERVAL '1 second' \
-         WHERE machine_id = ( \
+        "WITH candidate AS ( \
              SELECT machine_id FROM {table} \
              WHERE machine_id BETWEEN 0 AND 1023 \
                AND (reclaimable_after IS NULL OR reclaimable_after <= NOW()) \
              ORDER BY machine_id ASC LIMIT 1 FOR UPDATE SKIP LOCKED \
+         ), \
+         claimed AS ( \
+             UPDATE {table} \
+             SET claimed_at = NOW(), reclaimable_after = NOW() + $1 * INTERVAL '1 second' \
+             WHERE machine_id = (SELECT machine_id FROM candidate) \
+             RETURNING machine_id, {FENCING} AS fencing_token \
          ) \
-         RETURNING machine_id, {FENCING} AS fencing_token"
+         SELECT (SELECT machine_id FROM claimed) AS machine_id, \
+                (SELECT fencing_token FROM claimed) AS fencing_token, \
+                EXISTS (SELECT 1 FROM {table} WHERE machine_id BETWEEN 0 AND 1023) AS seeded"
     )
 }
 
@@ -234,23 +278,38 @@ fn release_sql(table: &str) -> String {
     )
 }
 
-/// Claims the lowest free machine ID, pinning READ COMMITTED for this
-/// transaction so the caller's database default cannot make the `SKIP LOCKED`
-/// claim throw serialization failures. Returns `None` if every ID is held.
-async fn claim_once(pool: &PgPool, claim: &str) -> Result<Option<(i16, i64)>, sqlx::Error> {
+/// Outcome of a claim attempt.
+enum Claim {
+    /// Claimed a machine ID, with its fencing token.
+    Got(i16, i64),
+    /// The table exists but has no machine-ID rows in `0..=1023`.
+    NotSeeded,
+    /// Every machine ID in range is currently leased.
+    Exhausted,
+}
+
+/// Runs one claim, pinning READ COMMITTED for this transaction so the caller's
+/// database default cannot make the `SKIP LOCKED` claim throw serialization
+/// failures.
+async fn claim_once(pool: &PgPool, claim: &str) -> Result<Claim, sqlx::Error> {
     let mut tx = pool.begin().await?;
     // Transaction-scoped (not session-scoped): safe under transaction pooling.
     sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
         .execute(&mut *tx)
         .await?;
-    // The table name in `claim` is validated (`validate_table_name`); the rest
-    // is a static template, so asserting SQL-safety is sound.
-    let row = sqlx::query_as::<_, (i16, i64)>(sqlx::AssertSqlSafe(claim))
-        .bind(BOOTLOOP_GRACE_SECS)
-        .fetch_optional(&mut *tx)
-        .await?;
+    // `table` inside `claim` is built from validated + quoted identifiers; the
+    // rest is a static template, so asserting SQL-safety is sound.
+    let (machine_id, fencing, seeded): (Option<i16>, Option<i64>, bool) =
+        sqlx::query_as(sqlx::AssertSqlSafe(claim))
+            .bind(BOOTLOOP_GRACE_SECS)
+            .fetch_one(&mut *tx)
+            .await?;
     tx.commit().await?;
-    Ok(row)
+    Ok(match (machine_id, fencing) {
+        (Some(id), Some(token)) => Claim::Got(id, token),
+        _ if !seeded => Claim::NotSeeded,
+        _ => Claim::Exhausted,
+    })
 }
 
 /// Renews the lease. Returns rows affected: `1` = renewed, `0` = stolen.
@@ -311,7 +370,7 @@ async fn run_lease_task(pool: PgPool, table: String, shared: Arc<LeaseShared>) {
 async fn reacquire(pool: &PgPool, claim: &str, shared: &LeaseShared) {
     loop {
         match claim_once(pool, claim).await {
-            Ok(Some((machine_id, fencing))) => {
+            Ok(Claim::Got(machine_id, fencing)) => {
                 shared
                     .machine_id
                     .store(machine_id as u16, Ordering::Release);
@@ -320,8 +379,10 @@ async fn reacquire(pool: &PgPool, claim: &str, shared: &LeaseShared) {
                 shared.poisoned.store(false, Ordering::Release);
                 return;
             }
-            // Range exhausted or a transient error: stay poisoned and retry.
-            Ok(None) | Err(_) => tokio::time::sleep(RECLAIM_RETRY_BACKOFF).await,
+            // Not seeded, exhausted, or a transient error: stay poisoned, retry.
+            Ok(Claim::NotSeeded) | Ok(Claim::Exhausted) | Err(_) => {
+                tokio::time::sleep(RECLAIM_RETRY_BACKOFF).await
+            }
         }
     }
 }
@@ -346,19 +407,20 @@ pub struct PgMachineIdLease {
 }
 
 impl PgMachineIdLease {
-    /// Acquires a lease from `pool` with defaults: the [`DEFAULT_TABLE`], which
-    /// must already exist (auto-creation is off by default — see
-    /// [`auto_create`](PgMachineIdLeaseBuilder::auto_create)).
+    /// Acquires a lease from `pool` with defaults: the `snowdrop_machine_id_leases`
+    /// table in the [`DEFAULT_SCHEMA`], which must already exist (auto-provisioning
+    /// is off by default — see
+    /// [`auto_provision`](PgMachineIdLeaseBuilder::auto_provision)).
     pub async fn acquire(pool: PgPool) -> Result<PgMachineIdLease, PgLeaseError> {
         PgMachineIdLease::builder(pool).build().await
     }
 
-    /// Starts building a lease with a custom table name or bootstrap behavior.
+    /// Starts building a lease with a custom schema or provisioning behavior.
     pub fn builder(pool: PgPool) -> PgMachineIdLeaseBuilder {
         PgMachineIdLeaseBuilder {
             pool,
-            table: DEFAULT_TABLE.to_string(),
-            auto_create: false,
+            schema: DEFAULT_SCHEMA.to_string(),
+            auto_provision: false,
         }
     }
 
@@ -375,21 +437,35 @@ impl PgMachineIdLease {
         !self.shared.is_fresh()
     }
 
-    /// The DDL that provisions the default lease schema and table
-    /// ([`DEFAULT_TABLE`]), for callers that create it through their own
-    /// migrations rather than
-    /// [`auto_create`](PgMachineIdLeaseBuilder::auto_create). Safe to run
-    /// repeatedly and concurrently. Use
-    /// [`schema_sql_with_table`](Self::schema_sql_with_table) for a custom name.
+    /// Idempotent DDL that creates the lease schema (unless the default `public`)
+    /// and table in [`DEFAULT_SCHEMA`], for callers who provision it through
+    /// their own migrations rather than
+    /// [`auto_provision`](PgMachineIdLeaseBuilder::auto_provision). Run it once —
+    /// it is not concurrency-safe (`auto_provision` is) — and pair it with
+    /// [`seeding_sql`](Self::seeding_sql). Use
+    /// [`schema_sql_with_schema`](Self::schema_sql_with_schema) for a custom schema.
     pub fn schema_sql() -> String {
-        bootstrap_sql(DEFAULT_TABLE)
+        schema_ddl(DEFAULT_SCHEMA)
     }
 
-    /// Like [`schema_sql`](Self::schema_sql), but for a custom table name (see
-    /// [`table_name`](PgMachineIdLeaseBuilder::table_name)).
-    pub fn schema_sql_with_table(table_name: &str) -> Result<String, PgLeaseError> {
-        validate_table_name(table_name)?;
-        Ok(bootstrap_sql(table_name))
+    /// Like [`schema_sql`](Self::schema_sql), but for a custom schema.
+    pub fn schema_sql_with_schema(schema: &str) -> Result<String, PgLeaseError> {
+        validate_schema_name(schema)?;
+        Ok(schema_ddl(schema))
+    }
+
+    /// Idempotent DML that seeds the lease table's 1024 machine-ID rows in
+    /// [`DEFAULT_SCHEMA`]. Run it after [`schema_sql`](Self::schema_sql); safe to
+    /// re-run. Use [`seeding_sql_with_schema`](Self::seeding_sql_with_schema) for
+    /// a custom schema.
+    pub fn seeding_sql() -> String {
+        seeding_ddl(DEFAULT_SCHEMA)
+    }
+
+    /// Like [`seeding_sql`](Self::seeding_sql), but for a custom schema.
+    pub fn seeding_sql_with_schema(schema: &str) -> Result<String, PgLeaseError> {
+        validate_schema_name(schema)?;
+        Ok(seeding_ddl(schema))
     }
 }
 
@@ -428,47 +504,54 @@ impl fmt::Debug for PgMachineIdLease {
 #[derive(Debug, Clone)]
 pub struct PgMachineIdLeaseBuilder {
     pool: PgPool,
-    table: String,
-    auto_create: bool,
+    schema: String,
+    auto_provision: bool,
 }
 
 impl PgMachineIdLeaseBuilder {
-    /// Sets the lease table name (default [`DEFAULT_TABLE`]). Independent ID
-    /// spaces in one database use distinct table names.
+    /// Sets the schema holding the lease table (default [`DEFAULT_SCHEMA`],
+    /// `public`). Independent ID spaces in one database use distinct schemas.
+    /// The name is quoted, so reserved words work and matching is case-sensitive.
     ///
-    /// Returns [`PgLeaseError::InvalidTableName`] unless `name` is a valid SQL
-    /// identifier, optionally schema-qualified (`schema.table`).
-    pub fn table_name(mut self, name: &str) -> Result<PgMachineIdLeaseBuilder, PgLeaseError> {
-        validate_table_name(name)?;
-        self.table = name.to_string();
+    /// Returns [`PgLeaseError::InvalidSchemaName`] unless `name` is a single
+    /// valid SQL identifier.
+    pub fn schema_name(mut self, name: &str) -> Result<PgMachineIdLeaseBuilder, PgLeaseError> {
+        validate_schema_name(name)?;
+        self.schema = name.to_string();
         Ok(self)
     }
 
-    /// Opts into creating the schema and table if they do not exist (default
-    /// `false`).
+    /// Opts into creating the schema (unless `public`), table, and seed rows if
+    /// absent (default `false`), race-safely across concurrent first boots.
     ///
-    /// Off by default: it requires DDL privileges (and, for a schema-qualified
-    /// table, `CREATE` on the database), which many production roles lack.
-    /// Prefer creating the objects from [`PgMachineIdLease::schema_sql`] in your
-    /// own migrations; enable this only for convenience in environments where
-    /// the connecting role may run DDL.
-    pub fn auto_create(mut self, yes: bool) -> PgMachineIdLeaseBuilder {
-        self.auto_create = yes;
+    /// Off by default: creating a table needs DDL rights — and a non-`public`
+    /// schema needs `CREATE` on the database — which many production roles lack.
+    /// Prefer provisioning from [`schema_sql`](PgMachineIdLease::schema_sql) +
+    /// [`seeding_sql`](PgMachineIdLease::seeding_sql) in your migrations; enable
+    /// this only where the connecting role may run DDL.
+    pub fn auto_provision(mut self, yes: bool) -> PgMachineIdLeaseBuilder {
+        self.auto_provision = yes;
         self
     }
 
-    /// Bootstraps (if enabled), claims the lowest free machine ID, and spawns
-    /// the heartbeat task.
+    /// Provisions (if enabled), claims the lowest free machine ID, and spawns the
+    /// heartbeat task.
     pub async fn build(self) -> Result<PgMachineIdLease, PgLeaseError> {
-        if self.auto_create {
-            sqlx::query(sqlx::AssertSqlSafe(bootstrap_sql(&self.table)))
+        if self.auto_provision {
+            sqlx::query(sqlx::AssertSqlSafe(provision_sql(&self.schema)))
+                .execute(&self.pool)
+                .await?;
+            sqlx::query(sqlx::AssertSqlSafe(seeding_ddl(&self.schema)))
                 .execute(&self.pool)
                 .await?;
         }
-        let claim = claim_sql(&self.table);
-        let (machine_id, fencing) = claim_once(&self.pool, &claim)
-            .await?
-            .ok_or(PgLeaseError::NoMachineIdAvailable)?;
+        let table = qualified(&self.schema);
+        let claim = claim_sql(&table);
+        let (machine_id, fencing) = match claim_once(&self.pool, &claim).await? {
+            Claim::Got(id, token) => (id, token),
+            Claim::NotSeeded => return Err(PgLeaseError::TableNotSeeded),
+            Claim::Exhausted => return Err(PgLeaseError::NoMachineIdAvailable),
+        };
 
         let shared = Arc::new(LeaseShared {
             machine_id: AtomicU16::new(machine_id as u16),
@@ -482,13 +565,13 @@ impl PgMachineIdLeaseBuilder {
 
         let task = tokio::spawn(run_lease_task(
             self.pool.clone(),
-            self.table.clone(),
+            table.clone(),
             Arc::clone(&shared),
         ));
         Ok(PgMachineIdLease {
             shared,
             pool: self.pool,
-            table: self.table,
+            table,
             task,
         })
     }
@@ -515,8 +598,8 @@ impl PgIdGenerator {
         PgIdGenerator::builder(pool).build().await
     }
 
-    /// Starts building a generator with a custom table, bootstrap behavior, or
-    /// epoch.
+    /// Starts building a generator with a custom schema, provisioning behavior,
+    /// or epoch.
     pub fn builder(pool: PgPool) -> PgIdGeneratorBuilder {
         PgIdGeneratorBuilder {
             lease: PgMachineIdLease::builder(pool),
@@ -619,17 +702,17 @@ pub struct PgIdGeneratorBuilder {
 }
 
 impl PgIdGeneratorBuilder {
-    /// Sets the lease table name (default [`DEFAULT_TABLE`]); see
-    /// [`PgMachineIdLeaseBuilder::table_name`].
-    pub fn table_name(mut self, name: &str) -> Result<PgIdGeneratorBuilder, PgLeaseError> {
-        self.lease = self.lease.table_name(name)?;
+    /// Sets the schema holding the lease table (default [`DEFAULT_SCHEMA`]); see
+    /// [`PgMachineIdLeaseBuilder::schema_name`].
+    pub fn schema_name(mut self, name: &str) -> Result<PgIdGeneratorBuilder, PgLeaseError> {
+        self.lease = self.lease.schema_name(name)?;
         Ok(self)
     }
 
-    /// Opts into creating the schema and table if absent (default `false`);
-    /// see [`PgMachineIdLeaseBuilder::auto_create`].
-    pub fn auto_create(mut self, yes: bool) -> PgIdGeneratorBuilder {
-        self.lease = self.lease.auto_create(yes);
+    /// Opts into creating the schema, table, and seed rows if absent (default
+    /// `false`); see [`PgMachineIdLeaseBuilder::auto_provision`].
+    pub fn auto_provision(mut self, yes: bool) -> PgIdGeneratorBuilder {
+        self.lease = self.lease.auto_provision(yes);
         self
     }
 
@@ -663,8 +746,12 @@ pub enum PgLeaseError {
     Database(sqlx::Error),
     /// Every machine ID in the table is currently leased.
     NoMachineIdAvailable,
-    /// The configured table name is not a valid SQL identifier.
-    InvalidTableName(String),
+    /// The lease table exists but has no machine-ID rows. Seed it with
+    /// [`seeding_sql`](PgMachineIdLease::seeding_sql), or enable
+    /// [`auto_provision`](PgMachineIdLeaseBuilder::auto_provision).
+    TableNotSeeded,
+    /// The configured schema name is not a valid SQL identifier.
+    InvalidSchemaName(String),
 }
 
 impl fmt::Display for PgLeaseError {
@@ -674,8 +761,11 @@ impl fmt::Display for PgLeaseError {
             PgLeaseError::NoMachineIdAvailable => {
                 f.write_str("no machine ID available: every ID in the table is leased")
             }
-            PgLeaseError::InvalidTableName(name) => {
-                write!(f, "invalid lease table name `{name}`: not a SQL identifier")
+            PgLeaseError::TableNotSeeded => f.write_str(
+                "lease table exists but is not seeded; run seeding_sql() or enable auto_provision",
+            ),
+            PgLeaseError::InvalidSchemaName(name) => {
+                write!(f, "invalid schema name `{name}`: not a SQL identifier")
             }
         }
     }
@@ -685,7 +775,9 @@ impl std::error::Error for PgLeaseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             PgLeaseError::Database(e) => Some(e),
-            PgLeaseError::NoMachineIdAvailable | PgLeaseError::InvalidTableName(_) => None,
+            PgLeaseError::NoMachineIdAvailable
+            | PgLeaseError::TableNotSeeded
+            | PgLeaseError::InvalidSchemaName(_) => None,
         }
     }
 }
@@ -726,27 +818,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_valid_table_names() {
-        for name in ["snowdrop_machine_id_leases", "t", "_x", "app.leases", "S1"] {
-            assert!(validate_table_name(name).is_ok(), "{name} should be valid");
+    fn accepts_valid_schema_names() {
+        // `order` is a reserved word — valid because we quote the identifier.
+        for name in ["public", "snowdrop", "s1", "_x", "order", "MySchema"] {
+            assert!(validate_schema_name(name).is_ok(), "{name} should be valid");
         }
     }
 
     #[test]
-    fn rejects_invalid_table_names() {
+    fn rejects_invalid_schema_names() {
         for name in [
             "",
-            "1leases",        // starts with a digit
-            "drop table",     // space
-            "a.b.c",          // too many qualifiers
-            "leases;--",      // punctuation / injection attempt
-            "reclaim'; DROP", // quote
-            "schema.",        // empty part
+            "1schema",         // starts with a digit
+            "a.b",             // qualifier / dot no longer allowed
+            "drop schema",     // space
+            "schema;--",       // punctuation / injection attempt
+            "reclaim\"; DROP", // embedded quote
+            &"x".repeat(64),   // too long
         ] {
             assert!(
                 matches!(
-                    validate_table_name(name),
-                    Err(PgLeaseError::InvalidTableName(_))
+                    validate_schema_name(name),
+                    Err(PgLeaseError::InvalidSchemaName(_))
                 ),
                 "{name:?} should be rejected"
             );
@@ -754,51 +847,80 @@ mod tests {
     }
 
     #[test]
-    fn sql_interpolates_table_and_fencing() {
-        let claim = claim_sql("app.leases");
-        assert!(claim.contains("UPDATE app.leases"));
+    fn qualified_name_is_quoted() {
+        assert_eq!(
+            qualified("public"),
+            "\"public\".\"snowdrop_machine_id_leases\""
+        );
+        assert_eq!(
+            qualified("MySchema"),
+            "\"MySchema\".\"snowdrop_machine_id_leases\""
+        );
+    }
+
+    #[test]
+    fn claim_sql_is_a_cte_with_a_seeded_flag() {
+        let claim = claim_sql(&qualified("public"));
+        assert!(claim.contains("WITH candidate AS"));
         assert!(claim.contains("FOR UPDATE SKIP LOCKED"));
         assert!(claim.contains("ORDER BY machine_id ASC"));
-        // Guards against out-of-range rows in a caller-managed table, so a
-        // claimed machine ID always fits `MachineId`.
+        // Guards against out-of-range rows, so a claimed ID always fits `MachineId`.
         assert!(claim.contains("machine_id BETWEEN 0 AND 1023"));
+        assert!(claim.contains("AS seeded"));
         assert!(claim.contains(FENCING));
+        assert!(claim.contains("\"public\".\"snowdrop_machine_id_leases\""));
 
-        let hb = heartbeat_sql(DEFAULT_TABLE);
+        let hb = heartbeat_sql(&qualified("public"));
         assert!(hb.contains(&format!("{FENCING} = $3")));
     }
 
     #[test]
-    fn default_table_lives_in_the_snowdrop_schema() {
-        assert_eq!(DEFAULT_TABLE, "snowdrop.machine_id_leases");
-        assert!(validate_table_name(DEFAULT_TABLE).is_ok());
-        assert_eq!(
-            split_schema(DEFAULT_TABLE),
-            (Some("snowdrop"), "machine_id_leases")
+    fn schema_ddl_creates_schema_only_when_not_public() {
+        let public = schema_ddl("public");
+        assert!(!public.contains("CREATE SCHEMA"));
+        assert!(
+            public.contains("CREATE TABLE IF NOT EXISTS \"public\".\"snowdrop_machine_id_leases\"")
+        );
+
+        let custom = schema_ddl("app");
+        assert!(custom.contains("CREATE SCHEMA IF NOT EXISTS \"app\""));
+        assert!(
+            custom.contains("CREATE TABLE IF NOT EXISTS \"app\".\"snowdrop_machine_id_leases\"")
         );
     }
 
     #[test]
-    fn bootstrap_creates_schema_only_when_qualified() {
-        let qualified = bootstrap_sql("snowdrop.machine_id_leases");
-        assert!(qualified.contains("CREATE SCHEMA snowdrop"));
-        // Both handlers must tolerate the concurrent-creation race, not just the
-        // already-committed case.
-        assert!(qualified.contains("WHEN duplicate_schema OR unique_violation THEN NULL"));
-        assert!(qualified.contains("WHEN duplicate_table OR unique_violation THEN NULL"));
-        assert!(qualified.contains("CREATE TABLE snowdrop.machine_id_leases"));
+    fn provision_sql_is_race_safe() {
+        let custom = provision_sql("app");
+        assert!(custom.contains("DO $$"));
+        assert!(custom.contains("CREATE SCHEMA \"app\""));
+        assert!(custom.contains("WHEN duplicate_schema OR unique_violation THEN NULL"));
+        assert!(custom.contains("WHEN duplicate_table OR unique_violation THEN NULL"));
+        // No seeding in the provisioning DDL — that's a separate statement.
+        assert!(!custom.contains("INSERT INTO"));
 
-        let plain = bootstrap_sql("leases");
-        assert!(!plain.contains("CREATE SCHEMA"));
-        assert!(plain.contains("CREATE TABLE leases"));
+        // `public` needs no schema creation.
+        assert!(!provision_sql("public").contains("CREATE SCHEMA"));
     }
 
     #[test]
-    fn schema_sql_defaults_to_the_default_table() {
+    fn seeding_ddl_is_idempotent() {
+        let seed = seeding_ddl("public");
+        assert!(seed.contains("generate_series(0, 1023)"));
+        assert!(seed.contains("ON CONFLICT (machine_id) DO NOTHING"));
+    }
+
+    #[test]
+    fn public_sql_helpers_use_the_default_schema() {
+        assert_eq!(PgMachineIdLease::schema_sql(), schema_ddl(DEFAULT_SCHEMA));
+        assert_eq!(PgMachineIdLease::seeding_sql(), seeding_ddl(DEFAULT_SCHEMA));
         assert_eq!(
-            PgMachineIdLease::schema_sql(),
-            PgMachineIdLease::schema_sql_with_table(DEFAULT_TABLE).unwrap()
+            PgMachineIdLease::schema_sql_with_schema("app").unwrap(),
+            schema_ddl("app")
         );
-        assert!(PgMachineIdLease::schema_sql().contains("CREATE SCHEMA snowdrop"));
+        assert_eq!(
+            PgMachineIdLease::seeding_sql_with_schema("app").unwrap(),
+            seeding_ddl("app")
+        );
     }
 }
