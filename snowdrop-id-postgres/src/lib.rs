@@ -35,6 +35,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use const_format::formatcp;
 use sqlx::PgPool;
 
 use snowdrop_id::{Epoch, Id, IdGenerator, MachineId, TryGenerateError};
@@ -55,6 +56,25 @@ const LEASES_COLUMNS: &str = "machine_id SMALLINT PRIMARY KEY, \
                               claimed_at TIMESTAMPTZ, \
                               reclaimable_after TIMESTAMPTZ";
 
+/// The quoted, qualified lease-table reference in the default `public` schema,
+/// assembled at compile time so the migration DDL getters can be `&'static str`.
+const QUALIFIED_DEFAULT: &str = formatcp!("\"{}\".\"{}\"", DEFAULT_SCHEMA, LEASES_TABLE);
+
+/// Default-schema migration DDL, `&'static str` so callers can pass it to
+/// `sqlx::raw_sql` without `AssertSqlSafe`. Matches `schema_ddl(DEFAULT_SCHEMA)`.
+const SCHEMA_SQL: &str = formatcp!(
+    "CREATE TABLE IF NOT EXISTS {} ({}) WITH (fillfactor = 70);",
+    QUALIFIED_DEFAULT,
+    LEASES_COLUMNS
+);
+
+/// Default-schema seed DML. Matches `seeding_ddl(DEFAULT_SCHEMA)`.
+const SEEDING_SQL: &str = formatcp!(
+    "INSERT INTO {} (machine_id) SELECT generate_series(0, 1023) \
+     ON CONFLICT (machine_id) DO NOTHING;",
+    QUALIFIED_DEFAULT
+);
+
 // --- Timing constants (fixed in v0.2; see docs §6). ------------------------
 
 /// How often the background task renews the lease.
@@ -64,8 +84,8 @@ const RECLAIM_TTL_SECS: i64 = 30 * 60;
 /// Local lease age past which the generator self-poisons: `RECLAIM_TTL` minus a
 /// margin covering worker/DB clock skew plus in-flight generation.
 const SELF_POISON_AFTER: Duration = Duration::from_secs((RECLAIM_TTL_SECS as u64) - 5 * 60);
-/// Short deadline written at claim time, so an ID claimed by a worker that
-/// crashes before its first heartbeat frees quickly. In seconds.
+/// Short deadline written at claim time, so a machine ID claimed by a worker
+/// that crashes before its first heartbeat frees quickly. In seconds.
 const BOOTLOOP_GRACE_SECS: i64 = 60;
 /// Self-poison horizon for the brief window between a fresh claim and the first
 /// heartbeat; strictly inside `BOOTLOOP_GRACE_SECS`.
@@ -242,8 +262,8 @@ fn seeding_ddl(schema: &str) -> String {
 /// The claim statement (`table` is the quoted, qualified reference). A CTE picks
 /// the lowest free row with `FOR UPDATE SKIP LOCKED` and claims it; the outer
 /// `SELECT` also reports whether the table has any seed rows, so a caller can
-/// tell "nothing claimed because the table is empty" from "…because every ID is
-/// leased". Always returns exactly one row.
+/// tell "nothing claimed because the table is empty" from "…because every
+/// machine ID is leased". Always returns exactly one row.
 fn claim_sql(table: &str) -> String {
     format!(
         "WITH candidate AS ( \
@@ -407,11 +427,13 @@ pub struct PgMachineIdLease {
 }
 
 impl PgMachineIdLease {
-    /// Acquires a lease from `pool` with defaults: the `snowdrop_machine_id_leases`
-    /// table in the [`DEFAULT_SCHEMA`], which must already exist (auto-provisioning
-    /// is off by default — see
-    /// [`auto_provision`](PgMachineIdLeaseBuilder::auto_provision)).
-    pub async fn acquire(pool: PgPool) -> Result<PgMachineIdLease, PgLeaseError> {
+    /// Creates a lease from `pool` with defaults, claiming the lowest free
+    /// machine ID and starting its background heartbeat. Uses the
+    /// `snowdrop_machine_id_leases` table in the [`DEFAULT_SCHEMA`], which must
+    /// already exist (auto-provisioning is off by default — see
+    /// [`auto_provision`](PgMachineIdLeaseBuilder::auto_provision)). For custom
+    /// options use [`builder`](Self::builder).
+    pub async fn new(pool: PgPool) -> Result<PgMachineIdLease, PgLeaseError> {
         PgMachineIdLease::builder(pool).build().await
     }
 
@@ -444,8 +466,8 @@ impl PgMachineIdLease {
     /// it is not concurrency-safe (`auto_provision` is) — and pair it with
     /// [`seeding_sql`](Self::seeding_sql). Use
     /// [`schema_sql_with_schema`](Self::schema_sql_with_schema) for a custom schema.
-    pub fn schema_sql() -> String {
-        schema_ddl(DEFAULT_SCHEMA)
+    pub fn schema_sql() -> &'static str {
+        SCHEMA_SQL
     }
 
     /// Like [`schema_sql`](Self::schema_sql), but for a custom schema.
@@ -458,8 +480,8 @@ impl PgMachineIdLease {
     /// [`DEFAULT_SCHEMA`]. Run it after [`schema_sql`](Self::schema_sql); safe to
     /// re-run. Use [`seeding_sql_with_schema`](Self::seeding_sql_with_schema) for
     /// a custom schema.
-    pub fn seeding_sql() -> String {
-        seeding_ddl(DEFAULT_SCHEMA)
+    pub fn seeding_sql() -> &'static str {
+        SEEDING_SQL
     }
 
     /// Like [`seeding_sql`](Self::seeding_sql), but for a custom schema.
@@ -472,8 +494,8 @@ impl PgMachineIdLease {
 impl Drop for PgMachineIdLease {
     fn drop(&mut self) {
         self.task.abort();
-        // Best-effort fenced release so the ID is reusable immediately; the
-        // reclaim deadline is the real backstop if this never lands.
+        // Best-effort fenced release so the machine ID is reusable immediately;
+        // the reclaim deadline is the real backstop if this never lands.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let pool = self.pool.clone();
             let sql = release_sql(&self.table);
@@ -593,8 +615,10 @@ pub struct PgIdGenerator {
 }
 
 impl PgIdGenerator {
-    /// Acquires a lease from `pool` with defaults and the default [`Epoch`].
-    pub async fn acquire(pool: PgPool) -> Result<PgIdGenerator, PgLeaseError> {
+    /// Creates a generator from `pool` with defaults and the default [`Epoch`]:
+    /// leases the lowest free machine ID and starts its background heartbeat. For
+    /// custom options use [`builder`](Self::builder).
+    pub async fn new(pool: PgPool) -> Result<PgIdGenerator, PgLeaseError> {
         PgIdGenerator::builder(pool).build().await
     }
 
@@ -864,7 +888,7 @@ mod tests {
         assert!(claim.contains("WITH candidate AS"));
         assert!(claim.contains("FOR UPDATE SKIP LOCKED"));
         assert!(claim.contains("ORDER BY machine_id ASC"));
-        // Guards against out-of-range rows, so a claimed ID always fits `MachineId`.
+        // Guards against out-of-range rows, so a claimed machine ID always fits `MachineId`.
         assert!(claim.contains("machine_id BETWEEN 0 AND 1023"));
         assert!(claim.contains("AS seeded"));
         assert!(claim.contains(FENCING));
@@ -912,8 +936,10 @@ mod tests {
 
     #[test]
     fn public_sql_helpers_use_the_default_schema() {
-        assert_eq!(PgMachineIdLease::schema_sql(), schema_ddl(DEFAULT_SCHEMA));
-        assert_eq!(PgMachineIdLease::seeding_sql(), seeding_ddl(DEFAULT_SCHEMA));
+        // The `&'static str` getters must match the runtime builders exactly, so
+        // the compile-time and runtime forms can't drift.
+        assert_eq!(schema_ddl(DEFAULT_SCHEMA), PgMachineIdLease::schema_sql());
+        assert_eq!(seeding_ddl(DEFAULT_SCHEMA), PgMachineIdLease::seeding_sql());
         assert_eq!(
             PgMachineIdLease::schema_sql_with_schema("app").unwrap(),
             schema_ddl("app")

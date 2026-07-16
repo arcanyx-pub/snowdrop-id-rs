@@ -68,8 +68,8 @@ let id = snowdrop_id::global::generate()?;              // anywhere else
 The companion [`snowdrop-id-postgres`](snowdrop-id-postgres/) crate lets
 clusters with no static machine-ID assignment lease one from a Postgres
 table. A worker claims the lowest free machine ID, a background task
-heartbeats to hold the lease, and the ID is released on drop (or reclaimed
-after the lease expires if the process dies). Every operation is a single
+heartbeats to hold the lease, and the machine ID is released on drop (or
+reclaimed after the lease expires if the process dies). Every operation is a single
 pooled statement — no session state — so it works through PgBouncer in any
 pooling mode and survives a primary failover:
 
@@ -78,7 +78,7 @@ use snowdrop_id_postgres::PgIdGenerator;
 use sqlx::PgPool;
 
 let pool = PgPool::connect("postgres://…").await?;
-let generator = PgIdGenerator::acquire(pool).await?; // claims the lowest free ID
+let generator = PgIdGenerator::new(pool).await?; // claims the lowest free machine ID
 let id = generator.generate()?;
 ```
 
