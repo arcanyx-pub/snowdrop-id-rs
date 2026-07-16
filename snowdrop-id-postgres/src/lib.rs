@@ -370,11 +370,19 @@ impl PgMachineIdLease {
         !self.shared.is_fresh()
     }
 
-    /// The DDL that creates the lease schema (if the table is schema-qualified)
-    /// and table, for callers that provision it through their own migrations
-    /// rather than [`auto_create`](PgMachineIdLeaseBuilder::auto_create). Safe
-    /// to run repeatedly and concurrently.
-    pub fn schema_sql(table_name: &str) -> Result<String, PgLeaseError> {
+    /// The DDL that provisions the default lease schema and table
+    /// ([`DEFAULT_TABLE`]), for callers that create it through their own
+    /// migrations rather than
+    /// [`auto_create`](PgMachineIdLeaseBuilder::auto_create). Safe to run
+    /// repeatedly and concurrently. Use
+    /// [`schema_sql_with_table`](Self::schema_sql_with_table) for a custom name.
+    pub fn schema_sql() -> String {
+        bootstrap_sql(DEFAULT_TABLE)
+    }
+
+    /// Like [`schema_sql`](Self::schema_sql), but for a custom table name (see
+    /// [`table_name`](PgMachineIdLeaseBuilder::table_name)).
+    pub fn schema_sql_with_table(table_name: &str) -> Result<String, PgLeaseError> {
         validate_table_name(table_name)?;
         Ok(bootstrap_sql(table_name))
     }
@@ -775,5 +783,14 @@ mod tests {
         let plain = bootstrap_sql("leases");
         assert!(!plain.contains("CREATE SCHEMA"));
         assert!(plain.contains("CREATE TABLE leases"));
+    }
+
+    #[test]
+    fn schema_sql_defaults_to_the_default_table() {
+        assert_eq!(
+            PgMachineIdLease::schema_sql(),
+            PgMachineIdLease::schema_sql_with_table(DEFAULT_TABLE).unwrap()
+        );
+        assert!(PgMachineIdLease::schema_sql().contains("CREATE SCHEMA snowdrop"));
     }
 }

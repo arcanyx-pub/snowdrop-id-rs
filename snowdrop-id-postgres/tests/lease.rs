@@ -80,7 +80,7 @@ async fn all_ids_held_errors() {
 
     // Create the table via the published DDL, then mark every row held far
     // into the future without acquiring any lease.
-    let ddl = PgMachineIdLease::schema_sql(table).unwrap();
+    let ddl = PgMachineIdLease::schema_sql_with_table(table).unwrap();
     sqlx::query(sqlx::AssertSqlSafe(ddl))
         .execute(&pool)
         .await

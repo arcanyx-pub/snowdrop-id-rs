@@ -13,9 +13,27 @@ jobs:
   test:
     name: Test (stable)
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The Postgres integration tests skip without SNOWDROP_TEST_PG_URL; the
+      # `postgres` job below runs them against every supported server version.
+      - name: Test (default features)
+        run: cargo test --workspace
+      - name: Test (all features)
+        run: cargo test --workspace --all-features
+
+  postgres:
+    name: Postgres ${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["14", "15", "16", "17", "18"]
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:${{ matrix.postgres }}-alpine
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -31,10 +49,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Test (default features)
-        run: cargo test --workspace
-      - name: Test (all features)
-        run: cargo test --workspace --all-features
+      - name: Test snowdrop-id-postgres
+        run: cargo test -p snowdrop-id-postgres
 
   lint:
     name: Rustfmt & Clippy
