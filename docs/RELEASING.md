@@ -5,6 +5,13 @@ versioned in lockstep and published to crates.io from CI using **Trusted
 Publishing (OIDC)** — GitHub Actions mints a short-lived crates.io token per run,
 so there is no long-lived `CARGO_REGISTRY_TOKEN` secret to leak or rotate.
 
+**Why lockstep (for now):** it keeps one version, one CHANGELOG, and one tag,
+which is worth more than the noise it costs while the project is pre-1.0 and has
+few users. The cost is that a breaking change to `snowdrop-id-postgres` (the
+crate that churns) drags the spec-frozen `snowdrop-id` core through a version
+bump it didn't earn. Revisit **independent versioning around 1.0**, when the
+core's stability becomes a real promise and the leasing crate is still moving.
+
 ## Release flow
 
 1. **On a feature branch, bump the version** (the commit rides along in a normal
