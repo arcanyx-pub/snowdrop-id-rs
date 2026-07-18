@@ -133,7 +133,7 @@ Consequences:
    single clause with **zero policy constants**.
 
 What we give up: the global upper bound on how long a dead worker's machine ID
-stays locked is now whatever deadline the holder last wrote. In v0.2, with a fixed
+stays locked is now whatever deadline the holder last wrote. With the fixed
 `reclaim_ttl`, that is simply 30 min. The concern only becomes real once the
 TTL is tunable (§10), where a builder-enforced `max_ttl` restores the bound;
 either way the blast radius is a single self-inflicted machine ID, never a fleet
@@ -383,7 +383,7 @@ than exposing it: `self_poison_after = reclaim_ttl − poison_margin`.
 | first-heartbeat delay   | 20 s    | worker-local (timer)             |
 | bootloop grace          | 60 s    | written at claim                 |
 
-**All of these are fixed constants in v0.2** — no timing knobs are exposed. The
+**All of these are fixed constants** — no timing knobs are exposed. The
 timing surface is deliberately deferred until real-world use tells us what (if
 anything) needs tuning (§10, Future work).
 
@@ -413,7 +413,7 @@ generator's timestamps strictly exceed the previous holder's.
 
 ### 6.4 Invariants among the fixed timings
 
-Because v0.2 ships these as constants, the relationships below are properties we
+Because these ship as fixed constants, the relationships below are properties we
 verify once with `const` assertions at compile time, not runtime validation:
 
 1. `first_heartbeat_delay (20 s) < bootloop_grace (60 s)` — a healthy worker
@@ -497,7 +497,7 @@ generator.is_poisoned();             // observability
 
 ## 10. Future work
 
-v0.2 ships with **all timings fixed** and no `reclaim_token`. The intent is to
+The crate ships with **all timings fixed** and no `reclaim_token`. The intent is to
 learn from real-world use before committing to a configuration surface — an
 unused knob is just another footgun. Likely candidates, once there is evidence
 for them:
@@ -514,8 +514,7 @@ for them:
   again — see `footgun_reclaim_token` below.
 - **`footgun_reclaim_token`.** A power-user opt-in to reclaim a specific machine
   ID by a caller-supplied token (e.g. a StatefulSet ordinal) *before* its
-  deadline, trading the freshness guarantee for fast, stable reclaim. Dropped
-  from v0.2 (§8) because its useful form bypasses freshness; worth revisiting
+  deadline, trading the freshness guarantee for fast, stable reclaim. Dropped (§8) because its useful form bypasses freshness; worth revisiting
   for the long-heartbeat case above, where the deadline may be a day away and
   waiting it out is untenable. Would ship named to advertise the sharp edge, and
   documented as requiring a token that is unique among concurrently live workers.
@@ -525,3 +524,25 @@ for them:
 Whatever we add here must preserve invariant S (§1) by default; configuration
 should widen operational fit, not open a path to duplicate IDs without an
 explicit, loudly-named opt-in.
+
+---
+
+## 11. Extending to other backends
+
+The lease *protocol* above — holder-declared `reclaimable_after`, a fencing
+token, client self-poison, lowest-free claim — is backend-agnostic. This
+document is its portable spec; a Redis, DynamoDB, or MySQL backend would
+implement the same protocol with very different mechanics (Redis: `SET NX PX` +
+Lua; Dynamo: conditional writes; MySQL: `SKIP LOCKED` but no `UPDATE …
+RETURNING`).
+
+When that day comes, each backend should be its **own sibling crate**
+(`snowdrop-id-redis`, …) depending on `snowdrop-id` — **not** a feature flag in
+one crate. Redis, Dynamo, and sqlx are heavy, mutually-exclusive dependency
+trees, and cargo features are additive (you can't express "exactly one
+backend"), so a single multi-backend crate would be a dependency and maintenance
+mess. The backend-agnostic pieces (the `LeaseShared` self-poison state machine,
+the timing constants, `PgGenerateError::MachineIdLeaseLost`) are worth lifting
+into a shared crate — but only once a **second** backend exists to reveal the
+right abstraction (rule of three); until then, duplicating them once is cheaper
+than guessing.
